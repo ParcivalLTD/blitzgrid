@@ -235,6 +235,54 @@ export class VfxCanvas {
         break;
       }
 
+      case 'HASTE': {
+        const c = this.sqCenter(ev.at);
+        this.spawnBurst(c.x, c.y, 14, '#4eb87a', '#d7ffe8', 150);
+        this.spawnRing(c.x, c.y, c.tile * 0.68, '#4eb87a', 0.3);
+        this.popups.push({
+          x: c.x,
+          y: c.y - c.tile * 0.22,
+          text: 'READY!',
+          color: '#d8ffe8',
+          stroke: '#174f30',
+          life: 0,
+          maxLife: 0.65,
+          size: 16,
+        });
+        break;
+      }
+
+      case 'BARRICADE': {
+        const c = this.sqCenter(ev.at);
+        this.spawnBurst(c.x, c.y, 12, '#9c968b', '#524e47', 110);
+        this.spawnRing(c.x, c.y, c.tile * 0.56, '#8b867d', 0.26);
+        break;
+      }
+
+      case 'BARRICADE_BREAK': {
+        const c = this.sqCenter(ev.at);
+        this.spawnBurst(c.x, c.y, 14, '#7d786f', '#c7c1b6', 160);
+        this.spawnRing(c.x, c.y, c.tile * 0.62, '#9c968b', 0.28);
+        for (let i = 0; i < 8; i++) {
+          const ang = (Math.PI * 2 * i) / 8 + (Math.random() - 0.5) * 0.4;
+          const spd = 75 + Math.random() * 110;
+          this.shards.push({
+            x: c.x,
+            y: c.y,
+            vx: Math.cos(ang) * spd,
+            vy: Math.sin(ang) * spd - 55,
+            rot: Math.random() * Math.PI * 2,
+            vrot: (Math.random() - 0.5) * 14,
+            size: 4 + Math.random() * 4,
+            color: i % 2 === 0 ? '#8b867d' : '#625e57',
+            life: 0,
+            maxLife: 0.45,
+          });
+        }
+        this.triggerShake(2.8, 0.12);
+        break;
+      }
+
       case 'CASTLE': {
         const k = this.sqCenter(ev.kingSq);
         const r = this.sqCenter(ev.rookSq);

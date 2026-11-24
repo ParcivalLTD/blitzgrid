@@ -51,6 +51,7 @@ export class BotAI {
   tryReflexDodgeOrPremove(engine, bot) {
     const pieces = engine.pieces;
     const zones = engine.freezeZones;
+    const barricades = engine.barricades || [];
 
     const incoming = pieces.filter((p) => p.side === 'white' && p.state === 'moving' && p.moveProgress < 0.78);
     if (incoming.length === 0) return false;
@@ -66,11 +67,11 @@ export class BotAI {
       // 1. If victim is ready -> sidestep off the attack ray (clutch mid-slide dodge!)
       if (engine.isPieceReady(victim)) {
         const ray = attacker.moveIsJump ? [targetSq] : getRayPath(attacker.fromSquare, targetSq);
-        const targets = getLegalTargets(victim, pieces, zones, false);
+        const targets = getLegalTargets(victim, pieces, zones, false, barricades);
         const safeEscapes = targets.filter(
           (t) =>
             !ray.some((rsq) => sqEq(rsq, t.square)) &&
-            !this.isSquareAttackedBy(t.square, 'white', pieces, zones, victim.id)
+            !this.isSquareAttackedBy(t.square, 'white', pieces, zones, victim.id, barricades)
         );
         if (safeEscapes.length > 0 && Math.random() < (bot.elo >= 1800 ? 0.82 : 0.55)) {
           // Prefer a capturing escape if available
@@ -84,7 +85,7 @@ export class BotAI {
         for (const ally of pieces) {
           if (ally.side !== 'black' || ally.id === victim.id || ally.premove) continue;
           if (ally.state !== 'idle' || ally.cooldown <= 0 || ally.cooldown > 1.2) continue;
-          const pTargets = getLegalTargets(ally, pieces, zones, true);
+          const pTargets = getLegalTargets(ally, pieces, zones, true, barricades);
           if (pTargets.some((t) => sqEq(t.square, targetSq))) {
             engine.commandMove('black', ally.id, targetSq);
             return true;
@@ -99,6 +100,7 @@ export class BotAI {
     const candidates = [];
     const pieces = engine.pieces;
     const zones = engine.freezeZones;
+    const barricades = engine.barricades || [];
     const black = engine.black;
     const rune = engine.elixirRune;
 
@@ -106,13 +108,13 @@ export class BotAI {
     const whiteKing = pieces.find((p) => p.side === 'white' && p.type === 'K');
     if (!blackKing || !whiteKing) return;
 
-    const checks = findAllChecks(pieces, zones);
+    const checks = findAllChecks(pieces, zones, barricades);
     const threatsToBlackKing = checks.filter((c) => c.kingSide === 'black');
 
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
       if (p.side !== 'black' || !engine.isPieceReady(p)) continue;
-      const targets = getLegalTargets(p, pieces, zones, false);
+      const targets = getLegalTargets(p, pieces, zones, false, barricades);
 
       for (let j = 0; j < targets.length; j++) {
         const t = targets[j];
@@ -136,7 +138,9 @@ export class BotAI {
           }
         }
 
-        if (t.isCapture) {
+        if (t.isBarricade) {
+          score += 14 * bot.aggression;
+        } else if (t.isCapture) {
           const victim = getPieceAt(t.square, pieces, p.id);
           if (victim) {
             const victimVal = PIECE_ELIXIR_VALUE[victim.type] + (victim.gilded ? 2 : 0);
@@ -163,7 +167,7 @@ export class BotAI {
 
         if (p.type === 'K' && !t.isCastle) {
           if (threatsToBlackKing.length > 0) {
-            const stillThreatened = this.isSquareAttackedBy(t.square, 'white', pieces, zones, p.id);
+            const stillThreatened = this.isSquareAttackedBy(t.square, 'white', pieces, zones, p.id, barricades);
             score += stillThreatened ? -35 : 62 * bot.defense;
           } else {
             score -= t.isCapture ? 0 : 12 + (7 - t.square.row) * 4;
@@ -172,13 +176,13 @@ export class BotAI {
 
         if (p.type !== 'K' && !t.isKingStrike) {
           const virtualPiece = { ...p, square: t.square, state: 'idle' };
-          if (doesPieceAttackSquare(virtualPiece, whiteKing.square, pieces, zones)) {
+          if (doesPieceAttackSquare(virtualPiece, whiteKing.square, pieces, zones, barricades)) {
             score += 24 * bot.aggression;
           }
         }
 
         if (p.type !== 'K' && bot.tradeAwareness > 0.35) {
-          const attackedAfter = this.isSquareAttackedBy(t.square, 'white', pieces, zones, p.id);
+          const attackedAfter = this.isSquareAttackedBy(t.square, 'white', pieces, zones, p.id, barricades);
           if (attackedAfter && !t.isCapture) {
             score -= PIECE_ELIXIR_VALUE[p.type] * 9 * bot.tradeAwareness;
           } else if (attackedAfter && t.isCapture) {
@@ -209,7 +213,7 @@ export class BotAI {
       }
     }
 
-    const dropSquares = getLegalDropSquares('black', pieces, zones, black.breachUnlocked);
+    const dropSquares = getLegalDropSquares('black', pieces, zones, black.breachUnlocked, barricades);
     const elixirPressure = black.elixir >= 8.5 ? 24 : black.elixir >= 6.5 ? 10 : 0;
 
     black.hand.forEach((cardId, slotIdx) => {
@@ -225,7 +229,8 @@ export class BotAI {
           zones,
           whiteKing.square,
           blackKing.square,
-          engine.phase === 'overtime' || engine.phase === 'sudden_death'
+          engine.phase === 'overtime' || engine.phase === 'sudden_death',
+          barricades
         );
 
         for (const { sq, baseScore } of sample) {
@@ -264,7 +269,7 @@ export class BotAI {
       }
 
       if (cardId === 'swap') {
-        const bestSwap = this.findBestSwap(pieces, zones, blackKing, threatsToBlackKing.length > 0);
+        const bestSwap = this.findBestSwap(pieces, zones, blackKing, threatsToBlackKing.length > 0, barricades);
         if (bestSwap) {
           const score = bestSwap.value * bot.spellBias.swap;
           if (score > 24) {
@@ -286,18 +291,18 @@ export class BotAI {
     candidates[pickIdx].execute();
   }
 
-  isSquareAttackedBy(sq, attackerSide, pieces, zones, ignorePieceId) {
+  isSquareAttackedBy(sq, attackerSide, pieces, zones, ignorePieceId, barricades = []) {
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
       if (p.side !== attackerSide || p.id === ignorePieceId) continue;
       if (p.state === 'moving' || p.state === 'swapping') continue;
-      const targets = getLegalTargets(p, pieces, zones, false);
+      const targets = getLegalTargets(p, pieces, zones, false, barricades);
       if (targets.some((t) => sqEq(t.square, sq))) return true;
     }
     return false;
   }
 
-  pickTopDropSquares(pieceType, dropSquares, pieces, zones, whiteKingSq, blackKingSq, isOvertime) {
+  pickTopDropSquares(pieceType, dropSquares, pieces, zones, whiteKingSq, blackKingSq, isOvertime, barricades = []) {
     const scored = [];
     const whitePawnsNearCenter = pieces.filter(
       (p) => p.side === 'white' && p.type === 'P' && p.square.row >= 3
@@ -332,7 +337,7 @@ export class BotAI {
         baseScore += 6;
       }
 
-      if (this.isSquareAttackedBy(sq, 'white', pieces, zones)) {
+      if (this.isSquareAttackedBy(sq, 'white', pieces, zones, null, barricades)) {
         baseScore -= PIECE_ELIXIR_VALUE[pieceType] * 7;
       }
 
@@ -402,7 +407,7 @@ export class BotAI {
     return best;
   }
 
-  findBestSwap(pieces, zones, blackKing, kingInCheck) {
+  findBestSwap(pieces, zones, blackKing, kingInCheck, barricades = []) {
     const friendlies = pieces.filter((p) => p.side === 'black' && p.state === 'idle');
     if (friendlies.length < 2) return null;
 
@@ -411,7 +416,7 @@ export class BotAI {
         const ally = friendlies[i];
         if (ally.id === blackKing.id) continue;
         if (ally.square.row < 5) continue;
-        if (!this.isSquareAttackedBy(ally.square, 'white', pieces, zones, blackKing.id)) {
+        if (!this.isSquareAttackedBy(ally.square, 'white', pieces, zones, blackKing.id, barricades)) {
           return { aId: blackKing.id, bId: ally.id, value: 78 };
         }
       }

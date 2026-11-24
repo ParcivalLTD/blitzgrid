@@ -35,6 +35,7 @@ export const DEPLOY_DURATION = 0.8;
 export const DEPLOY_INVULN = 0.2;
 export const PROMOTE_CHANNEL = 0.9;
 export const FREEZE_DURATION = 4.0;
+export const BARRICADE_DURATION = 6.0;
 export const SWAP_DURATION = 0.16;
 export const RECOIL_DURATION = 0.16;
 
@@ -124,6 +125,29 @@ export const CARD_DEFS = {
     cost: 3,
     kind: 'spell',
     shortDesc: 'Pawn: Ranks 1-3 -> Rook, Rank 4+ -> Queen. Other -> Gilded.',
+  },
+  haste: {
+    id: 'haste',
+    name: 'Haste',
+    cost: 2,
+    kind: 'spell',
+    shortDesc: 'Instantly refills a friendly piece stamina ring to 100%.',
+  },
+  pair: {
+    id: 'pair',
+    name: 'Pawns x2',
+    cost: 3,
+    kind: 'unit',
+    pieceType: 'P',
+    isPair: true,
+    shortDesc: 'Drops 2 side-by-side Pawns in one card.',
+  },
+  wall: {
+    id: 'wall',
+    name: 'Wall',
+    cost: 2,
+    kind: 'spell',
+    shortDesc: 'Sketches a 6s Stone Barricade (blocks sliders; 1 hit breaks it).',
   },
 };
 

@@ -55,7 +55,7 @@ export class SoundEngine {
   handleEvent(ev) {
     switch (ev.type) {
       case 'MOVE':
-        this.playMove(ev.isJump);
+        this.playMove(ev.isJump, ev.pieceType);
         break;
       case 'CAPTURE':
         this.playCapture(ev.streak || 1);
@@ -88,6 +88,18 @@ export class SoundEngine {
       case 'PROMOTE':
         this.playPromote(ev.toQueen);
         this.haptic(18);
+        break;
+      case 'HASTE':
+        this.playHaste();
+        this.haptic(10);
+        break;
+      case 'BARRICADE':
+        this.playBarricade();
+        this.haptic(12);
+        break;
+      case 'BARRICADE_BREAK':
+        this.playBarricadeBreak();
+        this.haptic(14);
         break;
       case 'CASTLE':
         this.playCastle();
@@ -126,36 +138,171 @@ export class SoundEngine {
     }
   }
 
-  playMove(isJump = false) {
+  playMove(isJump = false, pieceType = null) {
     if (!this.canPlay()) return;
     const t = this.ctx.currentTime;
 
-    // Chess.com wooden thock body
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(isJump ? 210 : 175, t);
-    osc.frequency.exponentialRampToValueAtTime(68, t + 0.055);
-    gain.gain.setValueAtTime(0.22, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.065);
-    osc.connect(gain).connect(this.ctx.destination);
-    osc.start(t);
-    osc.stop(t + 0.07);
+    // Distinct acoustic weight per piece type (Pawn light tap -> Rook stone thud -> Queen shimmer)
+    const profiles = {
+      P: { start: 225, end: 94, dur: 0.048, gain: 0.17, noiseFreq: 1380, noiseGain: 0.085 },
+      N: { start: 192, end: 78, dur: 0.052, gain: 0.21, noiseFreq: 1450, noiseGain: 0.11, clipClop: true },
+      B: { start: 182, end: 72, dur: 0.056, gain: 0.21, noiseFreq: 1260, noiseGain: 0.12 },
+      R: { start: 118, end: 46, dur: 0.085, gain: 0.29, noiseFreq: 760, noiseGain: 0.14 },
+      Q: { start: 164, end: 64, dur: 0.072, gain: 0.25, noiseFreq: 1180, noiseGain: 0.11, shimmer: true },
+      K: { start: 136, end: 52, dur: 0.078, gain: 0.26, noiseFreq: 860, noiseGain: 0.12 },
+    };
+    const pr = profiles[pieceType] || {
+      start: isJump ? 210 : 175,
+      end: 68,
+      dur: 0.055,
+      gain: 0.22,
+      noiseFreq: isJump ? 1400 : 1050,
+      noiseGain: 0.11,
+      clipClop: isJump,
+    };
 
-    // Crisp wood transient + subtle pencil brush
+    const thock = (offset, freqMult = 1, volMult = 1) => {
+      const st = t + offset;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(pr.start * freqMult, st);
+      osc.frequency.exponentialRampToValueAtTime(pr.end * freqMult, st + pr.dur);
+      gain.gain.setValueAtTime(pr.gain * volMult, st);
+      gain.gain.exponentialRampToValueAtTime(0.001, st + pr.dur + 0.012);
+      osc.connect(gain).connect(this.ctx.destination);
+      osc.start(st);
+      osc.stop(st + pr.dur + 0.018);
+
+      if (this.noiseBuffer) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noiseBuffer;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(pr.noiseFreq * freqMult, st);
+        bp.Q.value = 1.4;
+        const ng = this.ctx.createGain();
+        ng.gain.setValueAtTime(pr.noiseGain * volMult, st);
+        ng.gain.exponentialRampToValueAtTime(0.001, st + 0.045);
+        src.connect(bp).connect(ng).connect(this.ctx.destination);
+        src.start(st);
+        src.stop(st + 0.05);
+      }
+    };
+
+    thock(0, 1, 1);
+
+    // Knight twin wooden clip-clop
+    if (pr.clipClop) {
+      thock(0.048, 1.24, 0.72);
+    }
+
+    // Queen subtle high crystal resonance
+    if (pr.shimmer) {
+      const sh = this.ctx.createOscillator();
+      const sg = this.ctx.createGain();
+      sh.type = 'sine';
+      sh.frequency.setValueAtTime(660, t);
+      sh.frequency.exponentialRampToValueAtTime(880, t + 0.08);
+      sg.gain.setValueAtTime(0.045, t);
+      sg.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      sh.connect(sg).connect(this.ctx.destination);
+      sh.start(t);
+      sh.stop(t + 0.11);
+    }
+  }
+
+  playHaste() {
+    if (!this.canPlay()) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(420, t);
+    osc.frequency.exponentialRampToValueAtTime(980, t + 0.11);
+    g.gain.setValueAtTime(0.13, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.16);
+
     if (this.noiseBuffer) {
       const src = this.ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
       const bp = this.ctx.createBiquadFilter();
       bp.type = 'bandpass';
-      bp.frequency.setValueAtTime(isJump ? 1400 : 1050, t);
-      bp.Q.value = 1.4;
+      bp.frequency.setValueAtTime(1200, t);
+      bp.frequency.exponentialRampToValueAtTime(2800, t + 0.11);
       const ng = this.ctx.createGain();
-      ng.gain.setValueAtTime(0.11, t);
-      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.045);
+      ng.gain.setValueAtTime(0.08, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
       src.connect(bp).connect(ng).connect(this.ctx.destination);
       src.start(t);
-      src.stop(t + 0.05);
+      src.stop(t + 0.13);
+    }
+  }
+
+  playBarricade() {
+    if (!this.canPlay()) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(112, t);
+    osc.frequency.exponentialRampToValueAtTime(44, t + 0.11);
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.14);
+
+    if (this.noiseBuffer) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(680, t);
+      bp.Q.value = 0.9;
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.16, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.085);
+      src.connect(bp).connect(ng).connect(this.ctx.destination);
+      src.start(t);
+      src.stop(t + 0.09);
+    }
+  }
+
+  playBarricadeBreak() {
+    if (!this.canPlay()) return;
+    const t = this.ctx.currentTime;
+    [0, 0.042].forEach((off, idx) => {
+      const st = t + off;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(idx === 0 ? 520 : 380, st);
+      osc.frequency.setValueAtTime(idx === 0 ? 148 : 96, st);
+      osc.frequency.exponentialRampToValueAtTime(46, st + 0.08);
+      g.gain.setValueAtTime(idx === 0 ? 0.22 : 0.16, st);
+      g.gain.exponentialRampToValueAtTime(0.001, st + 0.09);
+      osc.connect(lp).connect(g).connect(this.ctx.destination);
+      osc.start(st);
+      osc.stop(st + 0.1);
+    });
+    if (this.noiseBuffer) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1450, t);
+      const ng = this.ctx.createGain();
+      ng.gain.setValueAtTime(0.19, t);
+      ng.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+      src.connect(bp).connect(ng).connect(this.ctx.destination);
+      src.start(t);
+      src.stop(t + 0.13);
     }
   }
 

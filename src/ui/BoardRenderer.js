@@ -1,8 +1,10 @@
 import { CARD_DEFS, COLS, KING_MAX_HP, LAND_BOUNCE_SEC, READY_FLASH_SEC, ROWS } from '../engine/constants.js';
 import {
   findAllChecks,
+  getBarricadeAt,
   getLegalDropSquares,
   getLegalTargets,
+  getPawnPairSquares,
   getPieceAt,
   getPreviewAttackSquares,
   inBounds,
@@ -32,6 +34,9 @@ export class BoardRenderer {
     this.onSelectionChange = callbacks.onSelectionChange || (() => {});
     this.onCommand = callbacks.onCommand || null;
     this.onTileSnap = callbacks.onTileSnap || null;
+    this.onFirstInteraction = callbacks.onFirstInteraction || null;
+    this.readOnly = false;
+    this.showFirstMoveHint = false;
 
     this.selectedPieceId = null;
     this.selectedCardSlot = null;
@@ -147,6 +152,10 @@ export class BoardRenderer {
         return this.engine.playSwapCard(side, cmd.slotIndex, cmd.pieceAId, cmd.pieceBId);
       case 'PROMOTE':
         return this.engine.playPromoteCard(side, cmd.slotIndex, cmd.pieceId);
+      case 'HASTE':
+        return this.engine.playHasteCard(side, cmd.slotIndex, cmd.pieceId);
+      case 'WALL':
+        return this.engine.playWallCard(side, cmd.slotIndex, cmd.targetSquare);
       default:
         return false;
     }
@@ -191,6 +200,9 @@ export class BoardRenderer {
       </marker>
       <marker id="plan-arrow-head" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse">
         <path d="M 1 1.5 L 8.5 5 L 1 8.5 Z" fill="#e69528"/>
+      </marker>
+      <marker id="hint-arrow-head" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse">
+        <path d="M 1 1.5 L 8.5 5 L 1 8.5 Z" fill="#f7f4eb"/>
       </marker>
     `;
     this.svg.appendChild(defs);
@@ -267,10 +279,12 @@ export class BoardRenderer {
       'centerLine',
       'rune',
       'freezes',
+      'barricades',
       'threatPeek',
       'targets',
       'arrows',
       'pieces',
+      'onboardingHint',
       'dragGhost',
       'badges',
     ];
@@ -281,11 +295,18 @@ export class BoardRenderer {
     }
   }
 
+  dismissFirstMoveHint() {
+    if (!this.showFirstMoveHint) return;
+    this.showFirstMoveHint = false;
+    if (this.onFirstInteraction) this.onFirstInteraction();
+  }
+
   selectCardSlot(slotIndex, startDragEvent = null) {
-    if (this.replayOverride) return;
+    if (this.replayOverride || this.readOnly) return;
     if (this.engine.phase === 'idle' || this.engine.phase === 'ended' || this.engine.phase === 'shattering' || this.engine.paused) {
       return;
     }
+    this.dismissFirstMoveHint();
     const myState = this.engine.getSideState(this.perspective);
     const cardId = myState.hand[slotIndex];
     if (!cardId) return;
@@ -340,7 +361,7 @@ export class BoardRenderer {
     });
 
     this.svg.addEventListener('pointerdown', (e) => {
-      if (this.replayOverride) return;
+      if (this.replayOverride || this.readOnly) return;
       this.isTouchPointer = e.pointerType === 'touch';
       const pos = this.clientToBoard(e.clientX, e.clientY);
       if (!pos || !pos.inBoard) return;
@@ -423,6 +444,7 @@ export class BoardRenderer {
 
       // Case 3: Pick up controllable friendly piece
       if (clickedPiece && this.engine.canControlPiece(clickedPiece, mySide)) {
+        this.dismissFirstMoveHint();
         this.peekEnemyPieceId = null;
         this.selectedCardSlot = null;
         this.swapFirstPieceId = null;
@@ -618,6 +640,33 @@ export class BoardRenderer {
       return false;
     }
 
+    if (cardId === 'haste') {
+      const p = getPieceAt(sq, this.engine.pieces);
+      if (p && p.side === mySide && (p.cooldown > 0 || p.state === 'deploying')) {
+        const ok = this.dispatchCommand({ kind: 'HASTE', slotIndex: slot, pieceId: p.id });
+        if (ok) {
+          this.clearSelection();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    if (cardId === 'wall') {
+      const blocked =
+        getPieceAt(sq, this.engine.pieces) ||
+        getBarricadeAt(sq, this.engine.barricades) ||
+        isFrozenForSide(sq, mySide, this.engine.freezeZones);
+      if (!blocked) {
+        const ok = this.dispatchCommand({ kind: 'WALL', slotIndex: slot, targetSquare: sq });
+        if (ok) {
+          this.clearSelection();
+          return true;
+        }
+      }
+      return false;
+    }
+
     if (cardId === 'swap') {
       const p = getPieceAt(sq, this.engine.pieces);
       if (p && p.side === mySide) {
@@ -656,13 +705,14 @@ export class BoardRenderer {
 
     const pieces = rf ? rf.pieces : eng.pieces;
     const freezeZones = rf ? rf.freezeZones : eng.freezeZones;
+    const barricades = rf ? (rf.barricades || []) : (eng.barricades || []);
     const rune = rf ? rf.elixirRune : eng.elixirRune;
     const phase = rf ? rf.phase : eng.phase;
     const elapsed = rf ? rf.t : eng.elapsed;
     const lastMove = rf ? rf.lastMove : eng.lastMove;
     const whiteHp = rf ? rf.whiteHp : eng.white.kingHp;
     const blackHp = rf ? rf.blackHp : eng.black.kingHp;
-    const checks = findAllChecks(pieces, freezeZones);
+    const checks = findAllChecks(pieces, freezeZones, barricades);
 
     // Subtle 5 Hz two-frame ink boil selector for living hand-drawn highlights
     const boilId = Math.floor(performance.now() / 210) % 2 === 0 ? 'url(#ink-boil-a)' : 'url(#ink-boil-b)';
@@ -698,11 +748,13 @@ export class BoardRenderer {
     this.renderElixirRune(rune, elapsed, boilId);
     this.renderHighlights(pieces, lastMove, checks, mySide);
     this.renderFreezes(freezeZones, mySide, boilId);
-    this.renderEnemyThreatPeek(pieces, freezeZones, mySide, Boolean(rf));
-    this.renderTargetsAndPreviews(eng, pieces, freezeZones, mySide, Boolean(rf), boilId);
+    this.renderBarricades(barricades, boilId);
+    this.renderEnemyThreatPeek(pieces, freezeZones, barricades, mySide, Boolean(rf));
+    this.renderTargetsAndPreviews(eng, pieces, freezeZones, barricades, mySide, Boolean(rf), boilId);
     this.renderArrows(pieces, checks, mySide, boilId);
     this.renderPieces(pieces, freezeZones, checks, whiteHp, blackHp, phase, eng.defeatedSide);
-    this.renderDragGhost(eng, pieces, freezeZones, mySide, Boolean(rf));
+    this.renderOnboardingHint(pieces, phase, elapsed, Boolean(rf));
+    this.renderDragGhost(eng, pieces, freezeZones, barricades, mySide, Boolean(rf));
     this.renderBadges(rf ? [] : eng.floatingBadges, elapsed);
   }
 
@@ -851,10 +903,34 @@ export class BoardRenderer {
     this.layers.freezes.innerHTML = parts.join('');
   }
 
+  renderBarricades(barricades, boilId) {
+    const g = this.layers.barricades;
+    if (!barricades || barricades.length === 0) {
+      g.innerHTML = '';
+      return;
+    }
+    const parts = [];
+    for (const b of barricades) {
+      const { x, y } = this.sqToSvg(b.square.col, b.square.row);
+      const pct = Math.max(0, Math.min(1, b.remaining / (b.duration || 6)));
+      parts.push(`
+        <g opacity="${(0.45 + pct * 0.55).toFixed(2)}" filter="${boilId}">
+          <rect x="${x + 12}" y="${y + 20}" width="76" height="58" rx="6" fill="#9b9589" stroke="#1b1a18" stroke-width="3.2"/>
+          <path d="M${x + 14} ${y + 40} H${x + 86} M${x + 14} ${y + 58} H${x + 86}" stroke="#1b1a18" stroke-width="2.4"/>
+          <path d="M${x + 39} ${y + 21} V${y + 40} M${x + 65} ${y + 21} V${y + 40} M${x + 28} ${y + 40} V${y + 58} M${x + 54} ${y + 40} V${y + 58} M${x + 76} ${y + 40} V${y + 58} M${x + 41} ${y + 58} V${y + 77} M${x + 66} ${y + 58} V${y + 77}" stroke="#4e4b45" stroke-width="2.2"/>
+          <path d="M${x + 18} ${y + 25} H${x + 34} M${x + 45} ${y + 25} H${x + 60}" stroke="#d9d4c7" stroke-width="2" stroke-linecap="round" opacity="0.65"/>
+          <rect x="${x + 16}" y="${y + 84}" width="68" height="5" rx="2.5" fill="#1b1917"/>
+          <rect x="${x + 17}" y="${y + 85}" width="${(66 * pct).toFixed(1)}" height="3" rx="1.5" fill="#d4cec2"/>
+        </g>
+      `);
+    }
+    g.innerHTML = parts.join('');
+  }
+
   /** Hovering (desktop) OR tapping (touch) an enemy piece subtly outlines its attack squares. */
-  renderEnemyThreatPeek(pieces, freezeZones, mySide, isReplay) {
+  renderEnemyThreatPeek(pieces, freezeZones, barricades, mySide, isReplay) {
     const g = this.layers.threatPeek;
-    if (isReplay || this.dragMode || this.selectedCardSlot !== null) {
+    if (isReplay || this.readOnly || this.dragMode || this.selectedCardSlot !== null) {
       g.innerHTML = '';
       return;
     }
@@ -874,7 +950,7 @@ export class BoardRenderer {
       return;
     }
 
-    const targets = getLegalTargets(enemy, pieces, freezeZones, false);
+    const targets = getLegalTargets(enemy, pieces, freezeZones, false, barricades);
     const parts = [];
     const ePos = this.sqToSvg(enemy.square.col, enemy.square.row);
     if (this.peekEnemyPieceId === enemy.id) {
@@ -897,8 +973,8 @@ export class BoardRenderer {
     g.innerHTML = parts.join('');
   }
 
-  renderTargetsAndPreviews(eng, pieces, freezeZones, mySide, isReplay, boilId) {
-    if (isReplay) {
+  renderTargetsAndPreviews(eng, pieces, freezeZones, barricades, mySide, isReplay, boilId) {
+    if (isReplay || this.readOnly) {
       this.layers.targets.innerHTML = '';
       return;
     }
@@ -913,7 +989,7 @@ export class BoardRenderer {
           piece.state === 'moving' || piece.state === 'recoiling'
             ? { ...piece, square: { ...piece.targetSquare } }
             : piece;
-        const targets = getLegalTargets(originPiece, pieces, freezeZones, isPremoveMode);
+        const targets = getLegalTargets(originPiece, pieces, freezeZones, isPremoveMode, barricades);
         for (const t of targets) {
           const { x, y } = this.sqToSvg(t.square.col, t.square.row);
           const cx = x + TILE / 2;
@@ -951,10 +1027,15 @@ export class BoardRenderer {
       const def = cardId ? CARD_DEFS[cardId] : null;
 
       if (def && def.kind === 'unit' && def.pieceType) {
-        const drops = getLegalDropSquares(mySide, pieces, freezeZones, myState.breachUnlocked);
+        const drops = getLegalDropSquares(mySide, pieces, freezeZones, myState.breachUnlocked, barricades);
+        const hoveredPair =
+          def.isPair && this.hoverSquare ? getPawnPairSquares(this.hoverSquare, drops) : [];
+
         for (const sq of drops) {
           const { x, y } = this.sqToSvg(sq.col, sq.row);
-          const isHovered = this.hoverSquare && sqEq(sq, this.hoverSquare);
+          const isHovered = def.isPair
+            ? hoveredPair.some((psq) => sqEq(psq, sq))
+            : this.hoverSquare && sqEq(sq, this.hoverSquare);
           parts.push(
             `<rect x="${x + 4}" y="${y + 4}" width="${TILE - 8}" height="${TILE - 8}" rx="4"
               fill="${isHovered ? 'rgba(129,182,76,0.34)' : 'rgba(129,182,76,0.14)'}"
@@ -964,12 +1045,19 @@ export class BoardRenderer {
         }
 
         if (this.hoverSquare && drops.some((sq) => sqEq(sq, this.hoverSquare))) {
-          const rays = getPreviewAttackSquares(def.pieceType, mySide, this.hoverSquare, pieces, freezeZones);
-          for (const rsq of rays) {
-            const { x, y } = this.sqToSvg(rsq.col, rsq.row);
-            parts.push(
-              `<circle cx="${x + 50}" cy="${y + 50}" r="10" fill="rgba(29,28,26,0.28)" stroke="rgba(244,241,230,0.65)" stroke-width="2"/>`
-            );
+          const previewOrigins = def.isPair ? hoveredPair : [this.hoverSquare];
+          const seen = new Set();
+          for (const originSq of previewOrigins) {
+            const rays = getPreviewAttackSquares(def.pieceType, mySide, originSq, pieces, freezeZones);
+            for (const rsq of rays) {
+              const key = `${rsq.col},${rsq.row}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              const { x, y } = this.sqToSvg(rsq.col, rsq.row);
+              parts.push(
+                `<circle cx="${x + 50}" cy="${y + 50}" r="10" fill="rgba(29,28,26,0.28)" stroke="rgba(244,241,230,0.65)" stroke-width="2"/>`
+              );
+            }
           }
         }
       }
@@ -999,6 +1087,47 @@ export class BoardRenderer {
               : ''
           }
         `);
+      }
+
+      if (cardId === 'haste') {
+        for (const p of pieces) {
+          if (p.side !== mySide) continue;
+          if (!(p.cooldown > 0 || p.state === 'deploying')) continue;
+          const { x, y } = this.sqToSvg(p.square.col, p.square.row);
+          const hovered = this.hoverSquare && sqEq(p.square, this.hoverSquare);
+          const showCue = hovered || this.isTouchPointer;
+          parts.push(`
+            <rect x="${x + 4}" y="${y + 4}" width="${TILE - 8}" height="${TILE - 8}" rx="6"
+              fill="rgba(78,184,122,${hovered ? 0.36 : 0.18})" stroke="#4eb87a" stroke-width="${hovered ? 3.5 : 2.2}"/>
+            ${
+              showCue
+                ? `<rect x="${x + 16}" y="${y - 10}" width="68" height="20" rx="4" fill="#152b20" stroke="#4eb87a" stroke-width="1.5"/>
+                   <text x="${x + 50}" y="${y + 4}" text-anchor="middle" fill="#d7ffe8" font-family="Inter, sans-serif" font-weight="800" font-size="11">READY!</text>`
+                : ''
+            }
+          `);
+        }
+      }
+
+      if (cardId === 'wall' && this.hoverSquare) {
+        const hs = this.hoverSquare;
+        const blocked =
+          getPieceAt(hs, pieces) ||
+          getBarricadeAt(hs, barricades) ||
+          isFrozenForSide(hs, mySide, freezeZones);
+        const { x, y } = this.sqToSvg(hs.col, hs.row);
+        if (!blocked) {
+          parts.push(`
+            <rect x="${x + 8}" y="${y + 16}" width="84" height="66" rx="6"
+              fill="rgba(155,149,137,0.42)" stroke="#e6e0d4" stroke-width="3" stroke-dasharray="8 5" filter="${boilId}"/>
+            <path d="M${x + 12} ${y + 38} H${x + 88} M${x + 12} ${y + 58} H${x + 88}" stroke="rgba(27,26,24,0.55)" stroke-width="2"/>
+          `);
+        } else {
+          parts.push(`
+            <rect x="${x + 5}" y="${y + 5}" width="${TILE - 10}" height="${TILE - 10}" rx="5"
+              fill="rgba(204,63,59,0.22)" stroke="#cc3f3b" stroke-width="2.5"/>
+          `);
+        }
       }
 
       if (cardId === 'promote') {
@@ -1306,9 +1435,50 @@ export class BoardRenderer {
     return parts.join('');
   }
 
-  renderDragGhost(eng, pieces, freezeZones, mySide, isReplay) {
+  /** Zero-text first-visit ghost cue: subtle pulsing chalk arrow c2 -> c4 until first touch. */
+  renderOnboardingHint(pieces, phase, elapsed, isReplay) {
+    const g = this.layers.onboardingHint;
+    if (
+      !this.showFirstMoveHint ||
+      isReplay ||
+      this.readOnly ||
+      this.perspective !== 'white' ||
+      phase !== 'active' ||
+      this.selectedPieceId ||
+      this.selectedCardSlot !== null
+    ) {
+      g.innerHTML = '';
+      return;
+    }
+
+    const c2Pawn = getPieceAt({ col: 2, row: 1 }, pieces);
+    const c4Occ = getPieceAt({ col: 2, row: 3 }, pieces);
+    if (!c2Pawn || c2Pawn.side !== 'white' || c2Pawn.type !== 'P' || c4Occ) {
+      g.innerHTML = '';
+      return;
+    }
+
+    const from = this.sqToSvg(2, 1);
+    const to = this.sqToSvg(2, 3);
+    const pulse = 0.52 + Math.sin(elapsed * 4.5) * 0.28;
+    const ringR = 36 + Math.sin(elapsed * 4.5) * 5;
+    const dashOff = -((elapsed * 42) % 24);
+
+    g.innerHTML = `
+      <g opacity="${pulse.toFixed(2)}">
+        <circle cx="${from.x + 50}" cy="${from.y + 50}" r="${ringR.toFixed(1)}" fill="none" stroke="#f7f4eb" stroke-width="3.5"/>
+        <line x1="${from.x + 50}" y1="${from.y + 18}" x2="${to.x + 50}" y2="${to.y + 56}"
+          stroke="#1b1a18" stroke-width="11" stroke-linecap="round" opacity="0.32"/>
+        <line x1="${from.x + 50}" y1="${from.y + 18}" x2="${to.x + 50}" y2="${to.y + 56}"
+          stroke="#f7f4eb" stroke-width="6.5" stroke-dasharray="14 10" stroke-dashoffset="${dashOff.toFixed(1)}"
+          stroke-linecap="round" marker-end="url(#hint-arrow-head)"/>
+      </g>
+    `;
+  }
+
+  renderDragGhost(eng, pieces, freezeZones, barricades, mySide, isReplay) {
     const g = this.layers.dragGhost;
-    if (isReplay || !this.dragMode || !this.dragMoved) {
+    if (isReplay || this.readOnly || !this.dragMode || !this.dragMoved) {
       g.innerHTML = '';
       return;
     }
@@ -1343,11 +1513,30 @@ export class BoardRenderer {
       const cardId = myState.hand[this.selectedCardSlot];
       const def = cardId ? CARD_DEFS[cardId] : null;
       if (def && def.kind === 'unit' && def.pieceType) {
-        const snap =
-          this.hoverSquare &&
-          getLegalDropSquares(mySide, pieces, freezeZones, myState.breachUnlocked).some((sq) =>
-            sqEq(sq, this.hoverSquare)
-          );
+        const drops = getLegalDropSquares(mySide, pieces, freezeZones, myState.breachUnlocked, barricades);
+        const snap = this.hoverSquare && drops.some((sq) => sqEq(sq, this.hoverSquare));
+
+        if (def.isPair) {
+          if (snap) {
+            const pairSqs = getPawnPairSquares(this.hoverSquare, drops);
+            g.innerHTML = pairSqs
+              .map((psq) => {
+                const pos = this.sqToSvg(psq.col, psq.row);
+                return `
+                  <rect x="${pos.x + 2}" y="${pos.y + 2}" width="${TILE - 4}" height="${TILE - 4}" rx="5" fill="rgba(129,182,76,0.22)" stroke="#81b64c" stroke-width="4.5"/>
+                  <g opacity="0.88" transform="translate(${(pos.x + 50).toFixed(1)}, ${(pos.y + 50).toFixed(1)}) scale(${snapBoost.toFixed(3)}) translate(-50, -50)">${renderPieceInner('P', mySide)}</g>
+                `;
+              })
+              .join('');
+          } else {
+            g.innerHTML = `
+              <g opacity="0.86" transform="translate(${(this.pointerSvg.x - 24).toFixed(1)}, ${this.pointerSvg.y.toFixed(1)}) scale(0.92) translate(-50, -50)">${renderPieceInner('P', mySide)}</g>
+              <g opacity="0.86" transform="translate(${(this.pointerSvg.x + 24).toFixed(1)}, ${this.pointerSvg.y.toFixed(1)}) scale(0.92) translate(-50, -50)">${renderPieceInner('P', mySide)}</g>
+            `;
+          }
+          return;
+        }
+
         const targetPos = snap ? this.sqToSvg(this.hoverSquare.col, this.hoverSquare.row) : null;
         const cx = targetPos ? targetPos.x + 50 : this.pointerSvg.x;
         const cy = targetPos ? targetPos.y + 50 : this.pointerSvg.y;
@@ -1360,6 +1549,25 @@ export class BoardRenderer {
           def.pieceType,
           mySide
         )}</g>`;
+        return;
+      }
+
+      if (cardId === 'wall') {
+        const hs = this.hoverSquare;
+        const valid =
+          hs &&
+          !getPieceAt(hs, pieces) &&
+          !getBarricadeAt(hs, barricades) &&
+          !isFrozenForSide(hs, mySide, freezeZones);
+        const pos = valid ? this.sqToSvg(hs.col, hs.row) : null;
+        const cx = pos ? pos.x + 50 : this.pointerSvg.x;
+        const cy = pos ? pos.y + 50 : this.pointerSvg.y;
+        g.innerHTML = `
+          <g opacity="0.82" transform="translate(${cx.toFixed(1)}, ${cy.toFixed(1)}) scale(${snapBoost.toFixed(3)}) translate(-50, -50)">
+            <rect x="14" y="22" width="72" height="56" rx="6" fill="#9b9589" stroke="#1b1a18" stroke-width="3"/>
+            <path d="M16 40 H84 M16 58 H84" stroke="#1b1a18" stroke-width="2.2"/>
+          </g>
+        `;
         return;
       }
     }

@@ -15,7 +15,34 @@ import { renderPieceSvg } from '../art/pieces.js';
 import { renderAvatarSvg } from '../art/avatars.js';
 import { renderBadgeSvg } from '../art/badges.js';
 
-const ALL_CARD_IDS = ['pawn', 'knight', 'bishop', 'rook', 'freeze', 'swap', 'promote'];
+const ALL_CARD_IDS = ['pawn', 'pair', 'knight', 'bishop', 'rook', 'haste', 'wall', 'freeze', 'swap', 'promote'];
+
+function copyTextSafe(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  } catch {
+    // Ignore clipboard fallback errors
+  }
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 export class HudController {
   constructor(engine, board, mp, profile, handlers) {
@@ -26,6 +53,9 @@ export class HudController {
     this.handlers = handlers;
 
     this.activeTab = 'play'; // 'play' | 'multiplayer' | 'deck' | 'history'
+    this.statsSubTab = 'history'; // 'history' | 'leaderboard'
+    this.leaderboardData = null;
+    this.leaderboardLoading = false;
     this.selectedMode = profile.selectedMode || 'blitz';
     this.selectedPuzzleId = getAllPuzzles()[0].id;
     this.rulesOpen = false;
@@ -49,6 +79,8 @@ export class HudController {
     this.prevCardAfford = [true, true, true, true];
     this.prevHandIds = [null, null, null, null];
     this.copiedCodeFlash = false;
+    this.copiedWatchFlash = false;
+    this.copiedShareFlash = false;
 
     this.cacheElements();
     this.initStaticChrome();
@@ -183,7 +215,7 @@ export class HudController {
       </div>
       <div class="rules-item">
         <div class="rules-icon-slot">${Icons.elixirDrop(14, '#9b4dca')}</div>
-        <div><strong>Spells & Center Rune (1–4):</strong> Step on the purple <strong>+2 Elixir Rune</strong> on the center line. <strong>Freeze</strong> (2x2 ice), <strong>Swap</strong> (drag A to B, incl. King), <strong>Promote</strong> (home Pawn -> Rook, Rank 4+ -> Queen, others Gilded).</div>
+        <div><strong>Spells & Deck (1–4):</strong> Step on the center <strong>+2 Elixir Rune</strong>. Customize your 8-card cycle with <strong>Haste</strong> (instant stamina refill), <strong>Pawns x2</strong>, <strong>Wall</strong> (6s stone barricade), <strong>Freeze</strong> (2x2 ice), <strong>Swap</strong>, and <strong>Promote</strong>.</div>
       </div>
       <div class="rules-item">
         <div class="rules-icon-slot">${Icons.streak(14, '#dda938')}</div>
@@ -250,6 +282,10 @@ export class HudController {
 
     this.el.btnPrimary.addEventListener('click', () => {
       this.setDrawerOpen(false);
+      if (this.mp.spectating) {
+        this.handlers.onLeaveMultiplayer();
+        return;
+      }
       if (this.engine.isMultiplayer && this.engine.phase === 'ended') {
         this.mp.requestRematch();
         return;
@@ -377,33 +413,134 @@ export class HudController {
     });
   }
 
+  setLeaderboard(data) {
+    this.leaderboardData = data;
+    this.leaderboardLoading = false;
+    if (this.statsSubTab === 'leaderboard') {
+      this.renderHistoryPanel();
+    }
+  }
+
   renderMultiplayerPanel() {
     const mp = this.mp;
-    const errHtml = mp.error ? `<div class="mp-error">${mp.error}</div>` : '';
+    const onlineLabel =
+      mp.onlineCount > 0
+        ? `Online: ${mp.onlineCount}${mp.inQueueCount > 0 ? ` · Queue: ${mp.inQueueCount}` : ''}`
+        : 'Server Ready';
+
+    // Preserve active input focus if only live presence counts ticked
+    const activeId = document.activeElement && document.activeElement.id;
+    if (activeId === 'mp-handle-input' || activeId === 'mp-code-input') {
+      const onlineSpan = document.getElementById('mp-online-text');
+      if (onlineSpan) onlineSpan.textContent = onlineLabel;
+      return;
+    }
+
+    const errHtml = mp.error ? `<div class="mp-error">${escapeHtml(mp.error)}</div>` : '';
+    const warnHtml = mp.reconnectingBanner ? `<div class="mp-warn">${escapeHtml(mp.reconnectingBanner)}</div>` : '';
+    const safeHandle = escapeHtml(this.profile.handle || 'You');
+    const presenceBar = `
+      <div class="mp-presence-bar">
+        <span class="online-pill"><span class="online-dot"></span><span id="mp-online-text" class="tabular">${onlineLabel}</span></span>
+        <input class="handle-input" id="mp-handle-input" maxlength="16" value="${safeHandle}" placeholder="Your name" title="Display Name" autocomplete="off" />
+      </div>
+    `;
+
+    const bindHandleInput = () => {
+      const hIn = document.getElementById('mp-handle-input');
+      if (!hIn) return;
+      const commit = () => this.handlers.onHandleChange?.(hIn.value);
+      hIn.addEventListener('change', commit);
+      hIn.addEventListener('blur', commit);
+    };
+
+    if (mp.spectating && mp.roomCode) {
+      const watchLink = `${location.origin}${location.pathname}?watch=${mp.roomCode}`;
+      const wName = escapeHtml(mp.spectatorMeta?.white?.name || 'White');
+      const bName = escapeHtml(mp.spectatorMeta?.black?.name || 'Black');
+      this.el.tabMp.innerHTML = `
+        ${presenceBar}
+        <div class="mp-card">
+          <div class="mp-label">Live Spectating · ${mp.roomCode}</div>
+          <div class="mp-status"><strong>${wName}</strong> (W) vs <strong>${bName}</strong> (B) — read-only live view.</div>
+          <div class="footer-secondary-row">
+            <button class="btn-secondary" id="mp-copy-watch" type="button">${Icons.copy(13)}<span>${this.copiedWatchFlash ? 'Copied' : 'Watch Link'}</span></button>
+            <button class="btn-secondary" id="mp-leave-room" type="button">Leave</button>
+          </div>
+        </div>
+        ${errHtml}
+      `;
+      bindHandleInput();
+      document.getElementById('mp-copy-watch').addEventListener('click', () => {
+        copyTextSafe(watchLink);
+        this.copiedWatchFlash = true;
+        this.renderMultiplayerPanel();
+        setTimeout(() => {
+          this.copiedWatchFlash = false;
+          this.renderMultiplayerPanel();
+        }, 1600);
+      });
+      document.getElementById('mp-leave-room').addEventListener('click', () => {
+        this.handlers.onLeaveMultiplayer();
+      });
+      return;
+    }
+
+    if (mp.inQueue || mp.status === 'queuing') {
+      this.el.tabMp.innerHTML = `
+        ${presenceBar}
+        <div class="mp-card">
+          <div class="mp-label">Public Matchmaking (${mp.mode === 'overtime' ? 'Overtime 1:00' : 'Blitz 2:00'})</div>
+          <div class="mp-status">Searching for a live opponent... Pairing happens automatically the instant another player queues.</div>
+          <button class="btn-secondary" id="mp-cancel-queue" type="button">${Icons.close(13)}<span>Cancel Search</span></button>
+        </div>
+        ${errHtml}
+      `;
+      bindHandleInput();
+      document.getElementById('mp-cancel-queue').addEventListener('click', () => {
+        this.handlers.onLeaveQueue();
+      });
+      return;
+    }
 
     if (mp.status === 'waiting' && mp.roomCode) {
       const link = `${location.origin}${location.pathname}?room=${mp.roomCode}`;
+      const watchLink = `${location.origin}${location.pathname}?watch=${mp.roomCode}`;
       this.el.tabMp.innerHTML = `
+        ${presenceBar}
         <div class="mp-card">
           <div class="mp-label">Room Created (${mp.mode === 'overtime' ? 'Overtime 1:00' : 'Blitz 2:00'})</div>
           <div class="mp-code-row">
             <span class="mp-code-val tabular">${mp.roomCode}</span>
             <button class="btn-secondary" id="mp-copy-link" style="flex:0;padding:0 10px" type="button" title="Copy Invite Link">
-              ${Icons.copy(13)}<span>${this.copiedCodeFlash ? 'Copied' : 'Link'}</span>
+              ${Icons.copy(13)}<span>${this.copiedCodeFlash ? 'Copied' : 'Invite'}</span>
             </button>
           </div>
-          <div class="mp-status">Share the code or open the invite link in another tab or device to start 1v1.</div>
-          <button class="btn-secondary" id="mp-cancel-room" type="button">Cancel Room</button>
+          <div class="mp-status">Share the code or invite link with your opponent. Spectators can join via Watch Link.</div>
+          <div class="footer-secondary-row">
+            <button class="btn-secondary" id="mp-copy-watch" type="button">${Icons.eye(13)}<span>${this.copiedWatchFlash ? 'Copied' : 'Watch Link'}</span></button>
+            <button class="btn-secondary" id="mp-cancel-room" type="button">Cancel</button>
+          </div>
         </div>
         ${errHtml}
       `;
+      bindHandleInput();
 
       document.getElementById('mp-copy-link').addEventListener('click', () => {
-        navigator.clipboard?.writeText(link).catch(() => {});
+        copyTextSafe(link);
         this.copiedCodeFlash = true;
         this.renderMultiplayerPanel();
         setTimeout(() => {
           this.copiedCodeFlash = false;
+          this.renderMultiplayerPanel();
+        }, 1600);
+      });
+      document.getElementById('mp-copy-watch').addEventListener('click', () => {
+        copyTextSafe(watchLink);
+        this.copiedWatchFlash = true;
+        this.renderMultiplayerPanel();
+        setTimeout(() => {
+          this.copiedWatchFlash = false;
           this.renderMultiplayerPanel();
         }, 1600);
       });
@@ -414,13 +551,29 @@ export class HudController {
     }
 
     if (mp.status === 'connected') {
+      const watchLink = `${location.origin}${location.pathname}?watch=${mp.roomCode}`;
       this.el.tabMp.innerHTML = `
+        ${presenceBar}
+        ${warnHtml}
         <div class="mp-card">
           <div class="mp-label">Connected Room ${mp.roomCode}</div>
-          <div class="mp-status">Playing as <strong>${mp.side === 'white' ? 'White' : 'Black'}</strong> vs ${mp.opponent?.name || 'Opponent'}.</div>
-          <button class="btn-secondary" id="mp-leave-room" type="button">Leave Room</button>
+          <div class="mp-status">Playing as <strong>${mp.side === 'white' ? 'White' : 'Black'}</strong> vs ${escapeHtml(mp.opponent?.name || 'Opponent')}.</div>
+          <div class="footer-secondary-row">
+            <button class="btn-secondary" id="mp-copy-watch" type="button">${Icons.eye(13)}<span>${this.copiedWatchFlash ? 'Copied' : 'Watch Link'}</span></button>
+            <button class="btn-secondary" id="mp-leave-room" type="button">Leave</button>
+          </div>
         </div>
       `;
+      bindHandleInput();
+      document.getElementById('mp-copy-watch').addEventListener('click', () => {
+        copyTextSafe(watchLink);
+        this.copiedWatchFlash = true;
+        this.renderMultiplayerPanel();
+        setTimeout(() => {
+          this.copiedWatchFlash = false;
+          this.renderMultiplayerPanel();
+        }, 1600);
+      });
       document.getElementById('mp-leave-room').addEventListener('click', () => {
         this.handlers.onLeaveMultiplayer();
       });
@@ -428,30 +581,41 @@ export class HudController {
     }
 
     const modeForHost = this.selectedMode === 'overtime' ? 'overtime' : 'blitz';
+    const modeLabel = modeForHost === 'overtime' ? 'OT 1:00' : '2:00';
     this.el.tabMp.innerHTML = `
+      ${presenceBar}
       <div class="mp-card">
-        <div class="mp-label">Host Private 1v1</div>
-        <div class="mp-status">Creates a 4-letter room code (${modeForHost === 'overtime' ? 'Overtime 1:00' : 'Blitz 2:00'}). You play White; guest plays flipped Black.</div>
-        <button class="btn-primary" id="mp-create-btn" type="button">
-          ${Icons.users(14)}<span>Create Room</span>
+        <div class="mp-label">Quick Public Match (${modeLabel})</div>
+        <button class="btn-primary" id="mp-find-btn" type="button">
+          ${Icons.search(14)}<span>Find Match</span>
         </button>
       </div>
       <div class="mp-card">
-        <div class="mp-label">Join by Code</div>
+        <div class="mp-label">Private Room & Spectate</div>
+        <button class="btn-secondary" id="mp-create-btn" type="button">
+          ${Icons.users(13)}<span>Create Private Room</span>
+        </button>
         <div class="mp-join-row">
           <input class="mp-input" id="mp-code-input" maxlength="6" placeholder="CODE" autocomplete="off" />
-          <button class="btn-secondary" id="mp-join-btn" style="flex:0;padding:0 12px" type="button">Join</button>
+          <button class="btn-secondary" id="mp-join-btn" style="flex:0;padding:0 10px" type="button">Join</button>
+          <button class="btn-secondary" id="mp-watch-btn" style="flex:0;padding:0 8px" type="button" title="Spectate Live">${Icons.eye(13)}</button>
         </div>
       </div>
       ${errHtml}
     `;
+    bindHandleInput();
 
+    document.getElementById('mp-find-btn').addEventListener('click', () => {
+      this.handlers.onJoinQueue(modeForHost);
+    });
     document.getElementById('mp-create-btn').addEventListener('click', () => {
       this.handlers.onCreateRoom(modeForHost);
     });
     const input = document.getElementById('mp-code-input');
     const doJoin = () => this.handlers.onJoinRoom(input.value);
+    const doWatch = () => this.handlers.onWatchRoom(input.value);
     document.getElementById('mp-join-btn').addEventListener('click', doJoin);
+    document.getElementById('mp-watch-btn').addEventListener('click', doWatch);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') doJoin();
     });
@@ -530,37 +694,115 @@ export class HudController {
     const losses = Math.max(0, p.games - p.wins);
     const list = p.recentMatches || [];
 
-    const matchesHtml =
-      list.length === 0
-        ? `<div class="mp-status">No completed matches yet.</div>`
-        : list
-            .map((m) => {
-              const sign = m.eloDelta >= 0 ? '+' : '';
-              return `
-                <div class="history-item">
-                  <div style="display:flex;align-items:center;gap:6px;min-width:0">
-                    <span class="outcome-tag ${m.outcome}">${m.outcome}</span>
-                    <span style="font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.opponent}</span>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-                    ${m.brilliant > 0 ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;color:#1bada6;font-weight:700">${renderBadgeSvg('brilliant', 13)}${m.brilliant}</span>` : ''}
-                    <span class="tabular" style="font-weight:700;color:${m.eloDelta >= 0 ? 'var(--cta-green)' : 'var(--text-muted)'}">${sign}${m.eloDelta}</span>
-                  </div>
-                </div>
-              `;
-            })
-            .join('');
-
-    this.el.tabHistory.innerHTML = `
-      <div class="career-grid">
-        <div class="career-box"><span>Record</span><strong class="tabular">${p.wins}-${losses}</strong></div>
-        <div class="career-box"><span>Best Streak</span><strong class="tabular">${p.bestStreak}</strong></div>
-        <div class="career-box"><span style="display:inline-flex;align-items:center;gap:4px">${renderBadgeSvg('brilliant', 13)} Brilliant</span><strong class="tabular">${p.career.brilliant}</strong></div>
-        <div class="career-box"><span>Puzzles</span><strong class="tabular">${p.puzzlesSolved.length}/${PUZZLES.length}</strong></div>
+    const toggleHtml = `
+      <div class="stats-toggle">
+        <button class="mode-pill ${this.statsSubTab === 'history' ? 'active' : ''}" data-stats-sub="history" type="button">History</button>
+        <button class="mode-pill ${this.statsSubTab === 'leaderboard' ? 'active' : ''}" data-stats-sub="leaderboard" type="button">${Icons.trophy(12, '#dda938')}<span>Leaderboard</span></button>
       </div>
-      <div class="mp-label" style="margin-top:2px">Recent Matches</div>
-      ${matchesHtml}
     `;
+
+    let bodyHtml = '';
+    if (this.statsSubTab === 'leaderboard') {
+      const lb = this.leaderboardData;
+      if (this.leaderboardLoading && !lb) {
+        bodyHtml = `<div class="mp-status">Loading daily & ELO rankings...</div>`;
+      } else if (!lb) {
+        bodyHtml = `<div class="mp-status">Leaderboard unavailable offline. Run server.py to sync scores.</div>`;
+      } else {
+        const dailyRows =
+          lb.dailyTop && lb.dailyTop.length > 0
+            ? lb.dailyTop
+                .map(
+                  (r, i) => `
+                  <div class="lb-row">
+                    <span class="lb-rank tabular ${i < 3 ? 'top' : ''}">#${i + 1}</span>
+                    <span class="lb-name">${escapeHtml(r.handle)}</span>
+                    <span class="lb-val tabular">${Number(r.clearSec).toFixed(1)}s</span>
+                  </div>
+                `
+                )
+                .join('')
+            : `<div class="mp-status">No clears yet today. Solve today's Daily puzzle to claim #1.</div>`;
+
+        const eloRows =
+          lb.eloTop && lb.eloTop.length > 0
+            ? lb.eloTop
+                .map(
+                  (r, i) => `
+                  <div class="lb-row">
+                    <span class="lb-rank tabular ${i < 3 ? 'top' : ''}">#${i + 1}</span>
+                    <span class="lb-name">${escapeHtml(r.handle)}</span>
+                    <span class="lb-val tabular">${r.elo} <span style="color:var(--text-muted);font-weight:600">(${r.wins}W)</span></span>
+                  </div>
+                `
+                )
+                .join('')
+            : `<div class="mp-status">Finish a match to post your rating.</div>`;
+
+        bodyHtml = `
+          <div class="deck-head-row" style="margin-top:2px">
+            <span class="mp-label">Today's Daily Fastest</span>
+            <button class="icon-btn" id="lb-refresh" type="button" title="Refresh">${Icons.rematch(12)}</button>
+          </div>
+          ${dailyRows}
+          <div class="mp-label" style="margin-top:4px">Top Rating</div>
+          ${eloRows}
+        `;
+      }
+    } else {
+      const matchesHtml =
+        list.length === 0
+          ? `<div class="mp-status">No completed matches yet.</div>`
+          : list
+              .map((m) => {
+                const sign = m.eloDelta >= 0 ? '+' : '';
+                return `
+                  <div class="history-item">
+                    <div style="display:flex;align-items:center;gap:6px;min-width:0">
+                      <span class="outcome-tag ${m.outcome}">${m.outcome}</span>
+                      <span style="font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(m.opponent)}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+                      ${m.brilliant > 0 ? `<span style="display:inline-flex;align-items:center;gap:2px;font-size:11px;color:#1bada6;font-weight:700">${renderBadgeSvg('brilliant', 13)}${m.brilliant}</span>` : ''}
+                      <span class="tabular" style="font-weight:700;color:${m.eloDelta >= 0 ? 'var(--cta-green)' : 'var(--text-muted)'}">${sign}${m.eloDelta}</span>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('');
+
+      bodyHtml = `
+        <div class="career-grid">
+          <div class="career-box"><span>Record</span><strong class="tabular">${p.wins}-${losses}</strong></div>
+          <div class="career-box"><span>Best Streak</span><strong class="tabular">${p.bestStreak}</strong></div>
+          <div class="career-box"><span style="display:inline-flex;align-items:center;gap:4px">${renderBadgeSvg('brilliant', 13)} Brilliant</span><strong class="tabular">${p.career.brilliant}</strong></div>
+          <div class="career-box"><span>Puzzles</span><strong class="tabular">${p.puzzlesSolved.length}/${PUZZLES.length}</strong></div>
+        </div>
+        <div class="mp-label" style="margin-top:2px">Recent Matches</div>
+        ${matchesHtml}
+      `;
+    }
+
+    this.el.tabHistory.innerHTML = toggleHtml + bodyHtml;
+
+    this.el.tabHistory.querySelectorAll('[data-stats-sub]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.statsSubTab = btn.dataset.statsSub;
+        if (this.statsSubTab === 'leaderboard') {
+          this.leaderboardLoading = true;
+          this.handlers.onLoadLeaderboard?.();
+        }
+        this.renderHistoryPanel();
+      });
+    });
+
+    const refBtn = document.getElementById('lb-refresh');
+    if (refBtn) {
+      refBtn.addEventListener('click', () => {
+        this.leaderboardLoading = true;
+        this.handlers.onLoadLeaderboard?.();
+      });
+    }
   }
 
   syncRailView() {
@@ -573,7 +815,32 @@ export class HudController {
     const showMoves = inGame || this.replayActive;
     this.el.railTabs.style.display = showMoves ? 'none' : 'grid';
     this.el.moveLogWrap.style.display = showMoves ? 'flex' : 'none';
-    this.el.railSectionLabel.textContent = this.replayActive ? 'Replay' : 'Moves';
+    if (this.replayActive) {
+      this.el.railSectionLabel.textContent = 'Replay';
+    } else if (this.engine.isMultiplayer && this.mp.roomCode) {
+      const watchUrl = `${location.origin}${location.pathname}?watch=${this.mp.roomCode}`;
+      const lbl = this.mp.spectating ? `Live · ${this.mp.roomCode}` : `Room ${this.mp.roomCode}`;
+      this.el.railSectionLabel.innerHTML = `
+        <span>${lbl}</span>
+        <button class="icon-btn" id="hdr-copy-watch" type="button" title="Copy Watch Link (${this.mp.roomCode})" style="width:auto;height:20px;padding:0 6px;gap:4px;font-size:10px;font-weight:700;text-transform:none;letter-spacing:0">
+          ${Icons.eye(12)}<span>${this.copiedWatchFlash ? 'Copied' : 'Watch'}</span>
+        </button>
+      `;
+      const btn = document.getElementById('hdr-copy-watch');
+      if (btn) {
+        btn.addEventListener('click', () => {
+          copyTextSafe(watchUrl);
+          this.copiedWatchFlash = true;
+          this.syncRailView();
+          setTimeout(() => {
+            this.copiedWatchFlash = false;
+            this.syncRailView();
+          }, 1600);
+        });
+      }
+    } else {
+      this.el.railSectionLabel.textContent = 'Moves';
+    }
 
     this.el.tabPlay.style.display = !showMoves && this.activeTab === 'play' ? 'flex' : 'none';
     this.el.tabMp.style.display = !showMoves && this.activeTab === 'multiplayer' ? 'flex' : 'none';
@@ -587,8 +854,8 @@ export class HudController {
     this.el.normalFooter.style.display = this.replayActive ? 'none' : 'flex';
     this.el.replayFooter.style.display = this.replayActive ? 'flex' : 'none';
 
-    this.el.btnResign.disabled = !inGame || this.engine.phase === 'shattering';
-    const canPause = inGame && !this.engine.isMultiplayer && this.engine.phase !== 'shattering';
+    this.el.btnResign.disabled = !inGame || this.engine.phase === 'shattering' || this.mp.spectating;
+    const canPause = inGame && !this.engine.isMultiplayer && !this.mp.spectating && this.engine.phase !== 'shattering';
     this.el.btnPause.disabled = !canPause;
     this.el.btnMobilePause.style.display = canPause ? '' : 'none';
 
@@ -597,6 +864,10 @@ export class HudController {
 
   syncPrimaryButton() {
     const eng = this.engine;
+    if (this.mp.spectating) {
+      this.el.btnPrimary.innerHTML = `${Icons.close(14)}<span>Leave Spectate</span>`;
+      return;
+    }
     if (eng.isMultiplayer) {
       if (eng.phase === 'ended') {
         const label = this.mp.rematchSent
@@ -724,11 +995,17 @@ export class HudController {
 
   renderCardArt(cardId, size = 32) {
     const def = CARD_DEFS[cardId];
+    if (cardId === 'pair') {
+      const mini = Math.max(14, Math.round(size * 0.76));
+      return `<span class="pair-art">${renderPieceSvg('P', this.board.perspective, mini)}${renderPieceSvg('P', this.board.perspective, mini)}</span>`;
+    }
     if (def.kind === 'unit' && def.pieceType) {
       return renderPieceSvg(def.pieceType, this.board.perspective, size);
     }
     if (cardId === 'freeze') return Icons.freeze(size - 6, '#237199');
     if (cardId === 'swap') return Icons.swap(size - 6, '#563fa3');
+    if (cardId === 'haste') return Icons.haste(size - 6, '#248052');
+    if (cardId === 'wall') return Icons.wall(size - 6, '#5e5a52');
     return Icons.promote(size - 6, '#966810');
   }
 
@@ -739,6 +1016,7 @@ export class HudController {
     const nextCard = myState.queue[0];
     const inactive =
       this.replayActive ||
+      this.mp.spectating ||
       eng.phase === 'idle' ||
       eng.phase === 'ended' ||
       eng.phase === 'shattering' ||
@@ -897,12 +1175,14 @@ export class HudController {
 
     // Arcade Ladder: offer 1-tap Next Bot when beating a solo bot!
     let nextBot = null;
-    if (iWon && !eng.isMultiplayer && r.mode !== 'puzzle') {
+    if (iWon && !eng.isMultiplayer && !this.mp.spectating && r.mode !== 'puzzle') {
       const curIdx = BOTS.findIndex((b) => b.id === eng.botId);
       if (curIdx >= 0 && curIdx < BOTS.length - 1) {
         nextBot = BOTS[curIdx + 1];
       }
     }
+
+    const shareSummary = this.buildShareSummary(eng, titleText, myStats, sign, myDelta);
 
     this.el.reviewBackdrop.style.display = 'flex';
     this.el.reviewBackdrop.innerHTML = `
@@ -939,17 +1219,19 @@ export class HudController {
         </div>
 
         ${
-          nextBot
-            ? `<button class="btn-primary" id="modal-next-bot" type="button">
-                 ${Icons.play(14)}<span>Next: ${nextBot.name} (${nextBot.elo})</span>
-               </button>`
-            : `<button class="btn-primary" id="modal-rematch" type="button">
-                 ${Icons.rematch(15)}<span>${rematchLabel}</span>
-               </button>`
+          this.mp.spectating
+            ? `<button class="btn-primary" id="modal-back" type="button">${Icons.close(14)}<span>Leave Spectate</span></button>`
+            : nextBot
+              ? `<button class="btn-primary" id="modal-next-bot" type="button">
+                   ${Icons.play(14)}<span>Next: ${nextBot.name} (${nextBot.elo})</span>
+                 </button>`
+              : `<button class="btn-primary" id="modal-rematch" type="button">
+                   ${Icons.rematch(15)}<span>${rematchLabel}</span>
+                 </button>`
         }
         <div class="footer-secondary-row">
           ${
-            nextBot
+            !this.mp.spectating && nextBot
               ? `<button class="btn-secondary" id="modal-rematch" type="button">${Icons.rematch(13)}<span>Rematch</span></button>`
               : ''
           }
@@ -958,9 +1240,16 @@ export class HudController {
               ? `<button class="btn-secondary" id="modal-replay" type="button">${Icons.replay(14)}<span>Replay</span></button>`
               : ''
           }
-          <button class="btn-secondary" id="modal-back" type="button">
-            ${Icons.botSwitch(14)}<span>${eng.isMultiplayer ? 'Leave' : 'Menu'}</span>
+          <button class="btn-secondary" id="modal-share" type="button">
+            ${Icons.share(13)}<span>${this.copiedShareFlash ? 'Copied' : 'Share'}</span>
           </button>
+          ${
+            !this.mp.spectating
+              ? `<button class="btn-secondary" id="modal-back" type="button">
+                   ${Icons.botSwitch(14)}<span>${eng.isMultiplayer ? 'Leave' : 'Menu'}</span>
+                 </button>`
+              : ''
+          }
         </div>
       </div>
     `;
@@ -973,27 +1262,59 @@ export class HudController {
       });
     }
 
-    document.getElementById('modal-rematch').addEventListener('click', () => {
-      if (eng.isMultiplayer) {
-        this.mp.requestRematch();
-        this.renderReviewModal(eng);
-      } else {
-        this.handlers.onStartSolo(this.selectedMode, this.selectedPuzzleId);
-      }
-    });
+    const rematchBtn = document.getElementById('modal-rematch');
+    if (rematchBtn) {
+      rematchBtn.addEventListener('click', () => {
+        if (eng.isMultiplayer) {
+          this.mp.requestRematch();
+          this.renderReviewModal(eng);
+        } else {
+          this.handlers.onStartSolo(this.selectedMode, this.selectedPuzzleId);
+        }
+      });
+    }
 
     const repBtn = document.getElementById('modal-replay');
     if (repBtn) {
       repBtn.addEventListener('click', () => this.enterReplay());
     }
 
-    document.getElementById('modal-back').addEventListener('click', () => {
-      if (eng.isMultiplayer) {
-        this.handlers.onLeaveMultiplayer();
-      } else {
-        this.handlers.onReturnToMenu();
-      }
-    });
+    const shareBtn = document.getElementById('modal-share');
+    if (shareBtn) {
+      shareBtn.addEventListener('click', () => {
+        copyTextSafe(shareSummary);
+        this.copiedShareFlash = true;
+        this.renderReviewModal(eng);
+        setTimeout(() => {
+          this.copiedShareFlash = false;
+          if (eng.phase === 'ended') this.renderReviewModal(eng);
+        }, 1600);
+      });
+    }
+
+    const backBtn = document.getElementById('modal-back');
+    if (backBtn) {
+      backBtn.addEventListener('click', () => {
+        if (eng.isMultiplayer || this.mp.spectating) {
+          this.handlers.onLeaveMultiplayer();
+        } else {
+          this.handlers.onReturnToMenu();
+        }
+      });
+    }
+  }
+
+  buildShareSummary(eng, titleText, myStats, sign, myDelta) {
+    const r = eng.result;
+    const url = `${location.origin}${location.pathname}`;
+    if (r.mode === 'puzzle') {
+      const puz = getPuzzleById(r.puzzleId);
+      const clearSec = Math.max(0.5, puz.durationSec - eng.timeRemaining).toFixed(1);
+      return `Drop-Chess | ${puz.name} — ${titleText} (${clearSec}s) | ${myStats.brilliant} Brilliant\n${url}`;
+    }
+    const opp = eng.isMultiplayer ? (this.mp.opponent?.name || '1v1 Opponent') : getBotById(eng.botId).name;
+    const modeTag = r.mode === 'overtime' ? 'Overtime 1:00' : 'Blitz 2:00';
+    return `Drop-Chess | ${titleText} vs ${opp} (${modeTag}) | ${sign}${myDelta} ELO | ${myStats.brilliant} Brilliant | ${myStats.damageDealt} King Dmg\n${url}`;
   }
 
   // =========================================================================
@@ -1014,17 +1335,36 @@ export class HudController {
 
     this.el.appShell.dataset.phase = this.replayActive ? 'replay' : eng.phase;
 
-    // Identity headers (handles Bots, Puzzles, and 1v1 Guest flip!)
+    // Identity headers (handles Bots, Puzzles, 1v1 Guest flip, and Live Spectators!)
     const bot = getBotById(eng.botId);
-    const oppDisplayName = eng.isMultiplayer ? (this.mp.opponent?.name || 'Opponent') : bot.name;
-    const oppDisplayElo = eng.isMultiplayer ? (this.mp.opponent?.elo || 800) : bot.elo;
-    const idKey = `${mySide}|${eng.isMultiplayer}|${oppDisplayName}|${oppDisplayElo}|${bot.id}`;
+    const myHandle = this.profile.handle || 'You';
+    const oppDisplayName = this.mp.spectating
+      ? `${this.mp.spectatorMeta?.black?.name || 'Black'} (B)`
+      : eng.isMultiplayer
+        ? (this.mp.opponent?.name || 'Opponent')
+        : bot.name;
+    const oppDisplayElo = this.mp.spectating
+      ? (this.mp.spectatorMeta?.black?.elo || 800)
+      : eng.isMultiplayer
+        ? (this.mp.opponent?.elo || 800)
+        : bot.elo;
+    const youDisplayName = this.mp.spectating
+      ? `${this.mp.spectatorMeta?.white?.name || 'White'} (W)`
+      : eng.isMultiplayer
+        ? `${myHandle} (${mySide === 'white' ? 'W' : 'B'})`
+        : myHandle;
+    const youDisplayElo = this.mp.spectating
+      ? (this.mp.spectatorMeta?.white?.elo || 800)
+      : this.profile.elo;
+
+    const idKey = `${mySide}|${eng.isMultiplayer}|${this.mp.spectating}|${oppDisplayName}|${oppDisplayElo}|${youDisplayName}|${youDisplayElo}|${bot.id}`;
     if (idKey !== this.lastIdentityKey) {
       this.lastIdentityKey = idKey;
-      this.el.oppAvatar.innerHTML = renderAvatarSvg(eng.isMultiplayer ? 'you' : bot.id, 30);
+      this.el.oppAvatar.innerHTML = renderAvatarSvg(eng.isMultiplayer || this.mp.spectating ? 'you' : bot.id, 30);
       this.el.oppName.textContent = oppDisplayName;
       this.el.oppElo.textContent = `(${oppDisplayElo})`;
-      this.el.youName.textContent = eng.isMultiplayer ? `You (${mySide === 'white' ? 'W' : 'B'})` : 'You';
+      this.el.youName.textContent = youDisplayName;
+      this.el.youElo.textContent = `(${youDisplayElo})`;
       this.renderPlayList();
       this.syncPrimaryButton();
     }
@@ -1058,7 +1398,13 @@ export class HudController {
       this.el.bannerHost.innerHTML = '';
     }
 
-    if (eng.botQuip && !this.replayActive) {
+    if (this.mp.reconnectingBanner) {
+      this.el.botQuip.style.display = 'block';
+      this.el.botQuip.textContent = this.mp.reconnectingBanner;
+    } else if (this.mp.spectating) {
+      this.el.botQuip.style.display = 'block';
+      this.el.botQuip.textContent = `Spectating live room ${this.mp.roomCode}`;
+    } else if (eng.botQuip && !this.replayActive) {
       this.el.botQuip.style.display = 'block';
       this.el.botQuip.textContent = eng.mode === 'puzzle' ? eng.botQuip : `${bot.name}: ${eng.botQuip}`;
     } else {
@@ -1127,9 +1473,13 @@ export class HudController {
                 ? Icons.freeze(13, '#5cb8e4')
                 : m.spellIcon === 'swap'
                   ? Icons.swap(13, '#9378e6')
-                  : m.spellIcon === 'promote'
-                    ? Icons.crown(13, '#dda938')
-                    : '';
+                  : m.spellIcon === 'haste'
+                    ? Icons.haste(13, '#4eb87a')
+                    : m.spellIcon === 'wall'
+                      ? Icons.wall(13, '#b8b2a6')
+                      : m.spellIcon === 'promote'
+                        ? Icons.crown(13, '#dda938')
+                        : '';
             const badgeHtml = m.badge ? renderBadgeSvg(m.badge, 17) : '';
             return `
               <div class="move-row">

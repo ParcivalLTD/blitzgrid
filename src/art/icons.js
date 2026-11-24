@@ -64,6 +64,45 @@ export const Icons = {
     </svg>`;
   },
 
+  haste(size = 24, color = '#248052') {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M14.2 3.2 L6.6 13.1 H11.8 L9.9 20.8 L17.8 10.7 H12.4 Z" fill="#5fd196" stroke="#1b261f" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M3.2 8.2 H6.4 M2.5 12 H5.2 M18.5 15.8 H21.2" stroke="${color}" stroke-width="1.7" stroke-linecap="round"/>
+    </svg>`;
+  },
+
+  wall(size = 24, color = '#5e5a52') {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3.2" y="5" width="17.6" height="14" rx="2.2" fill="#9c968b" stroke="#1d1c1a" stroke-width="1.8"/>
+      <path d="M3.5 9.8 H20.5 M3.5 14.4 H20.5" stroke="#1d1c1a" stroke-width="1.5"/>
+      <path d="M9.5 5 V9.8 M15.5 5 V9.8 M6.8 9.8 V14.4 M12.8 9.8 V14.4 M17.5 9.8 V14.4 M10 14.4 V19 M15.8 14.4 V19" stroke="${color}" stroke-width="1.45"/>
+    </svg>`;
+  },
+
+  share(size = 14) {
+    return S(
+      size,
+      `<path d="M10 12.6 V3.6 M6.6 6.8 L10 3.4 L13.4 6.8"/>
+       <path d="M4.2 10.6 V15.4 C4.2 16.2 4.8 16.8 5.6 16.8 H14.4 C15.2 16.8 15.8 16.2 15.8 15.4 V10.6"/>`
+    );
+  },
+
+  eye(size = 14) {
+    return S(
+      size,
+      `<path d="M2.4 10 C4.5 6.4 7.1 5 10 5 C12.9 5 15.5 6.4 17.6 10 C15.5 13.6 12.9 15 10 15 C7.1 15 4.5 13.6 2.4 10 Z"/>
+       <circle cx="10" cy="10" r="2.2" fill="currentColor"/>`
+    );
+  },
+
+  search(size = 14) {
+    return S(
+      size,
+      `<circle cx="8.8" cy="8.8" r="5"/>
+       <path d="M12.6 12.6 L16.6 16.6"/>`
+    );
+  },
+
   soundOn(size = 16) {
     return S(
       size,

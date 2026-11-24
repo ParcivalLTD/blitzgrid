@@ -84,19 +84,31 @@ const KNIGHT_OFFSETS = [
   [-1, 2],
 ];
 
+export function getBarricadeAt(sq, barricades = []) {
+  for (let i = 0; i < barricades.length; i++) {
+    const b = barricades[i];
+    if (b.remaining > 0 && b.square.col === sq.col && b.square.row === sq.row) {
+      return b;
+    }
+  }
+  return undefined;
+}
+
 /** Compute legal move & capture destinations for an on-board piece. */
-export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) {
+export function getLegalTargets(piece, pieces, freezeZones, forPremove = false, barricades = []) {
   const results = [];
   const { col, row } = piece.square;
   const dir = piece.side === 'white' ? 1 : -1;
 
   const isBlockedIce = (sq) => !forPremove && isFrozenForSide(sq, piece.side, freezeZones);
+  const wallAt = (sq) => (forPremove ? undefined : getBarricadeAt(sq, barricades));
 
   if (piece.type === 'P') {
     const fwd1 = { col, row: row + dir };
     if (inBounds(fwd1.col, fwd1.row)) {
       const occ1 = getPieceAt(fwd1, pieces, piece.id);
-      if (!occ1 && !isBlockedIce(fwd1)) {
+      const w1 = wallAt(fwd1);
+      if (!occ1 && !w1 && !isBlockedIce(fwd1)) {
         results.push({ square: fwd1, isCapture: false, isKingStrike: false });
 
         const onStartRank = (piece.side === 'white' && row === 1) || (piece.side === 'black' && row === 6);
@@ -104,7 +116,7 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
           const fwd2 = { col, row: row + dir * 2 };
           if (inBounds(fwd2.col, fwd2.row)) {
             const occ2 = getPieceAt(fwd2, pieces, piece.id);
-            if (!occ2 && !isBlockedIce(fwd2)) {
+            if (!occ2 && !wallAt(fwd2) && !isBlockedIce(fwd2)) {
               results.push({ square: fwd2, isCapture: false, isKingStrike: false });
             }
           }
@@ -117,12 +129,16 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
       if (!inBounds(diag.col, diag.row)) continue;
       if (isBlockedIce(diag)) continue;
       const occ = getPieceAt(diag, pieces, piece.id);
+      const w = wallAt(diag);
       if (occ && occ.side !== piece.side && (forPremove || isPieceTargetable(occ))) {
         results.push({
           square: diag,
           isCapture: occ.type !== 'K',
           isKingStrike: occ.type === 'K',
         });
+      } else if (w) {
+        // Pawns can diagonally smash a Stone Barricade!
+        results.push({ square: diag, isCapture: true, isKingStrike: false, isBarricade: true });
       } else if (forPremove && !occ) {
         results.push({ square: diag, isCapture: true, isKingStrike: false });
       }
@@ -136,7 +152,10 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
       if (!inBounds(target.col, target.row)) continue;
       if (isBlockedIce(target)) continue;
       const occ = getPieceAt(target, pieces, piece.id);
-      if (!occ) {
+      const w = wallAt(target);
+      if (w) {
+        results.push({ square: target, isCapture: true, isKingStrike: false, isBarricade: true });
+      } else if (!occ) {
         results.push({ square: target, isCapture: false, isKingStrike: false });
       } else if (occ.side !== piece.side && (forPremove || isPieceTargetable(occ))) {
         results.push({
@@ -155,7 +174,10 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
       if (!inBounds(target.col, target.row)) continue;
       if (isBlockedIce(target)) continue;
       const occ = getPieceAt(target, pieces, piece.id);
-      if (!occ) {
+      const w = wallAt(target);
+      if (w) {
+        results.push({ square: target, isCapture: true, isKingStrike: false, isBarricade: true });
+      } else if (!occ) {
         results.push({ square: target, isCapture: false, isKingStrike: false });
       } else if (occ.side !== piece.side && occ.type !== 'K' && (forPremove || isPieceTargetable(occ))) {
         results.push({
@@ -169,7 +191,6 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
     // Real-time Castling (free K+R synergy on back rank!)
     const homeRow = piece.side === 'white' ? 0 : ROWS - 1;
     if (!forPremove && !piece.hasMoved && col === 3 && row === homeRow) {
-      // Left Castle (Queenside): Rook at a1/a8 (col 0), b & c empty -> King to b (col 1), Rook to c (col 2)
       const leftRook = getPieceAt({ col: 0, row: homeRow }, pieces, piece.id);
       if (
         leftRook &&
@@ -181,6 +202,8 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
         !isBlockedIce({ col: 0, row: homeRow }) &&
         !isBlockedIce({ col: 1, row: homeRow }) &&
         !isBlockedIce({ col: 2, row: homeRow }) &&
+        !wallAt({ col: 1, row: homeRow }) &&
+        !wallAt({ col: 2, row: homeRow }) &&
         !getPieceAt({ col: 1, row: homeRow }, pieces) &&
         !getPieceAt({ col: 2, row: homeRow }, pieces)
       ) {
@@ -200,7 +223,6 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
         });
       }
 
-      // Right Castle (Kingside): Rook at f1/f8 (col 5), e empty -> drag King onto f1/f8 Rook -> K to e (col 4), R to d (col 3)
       const rightRook = getPieceAt({ col: 5, row: homeRow }, pieces, piece.id);
       if (
         rightRook &&
@@ -211,6 +233,7 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
         rightRook.cooldown <= 0 &&
         !isBlockedIce({ col: 4, row: homeRow }) &&
         !isBlockedIce({ col: 5, row: homeRow }) &&
+        !wallAt({ col: 4, row: homeRow }) &&
         !getPieceAt({ col: 4, row: homeRow }, pieces)
       ) {
         results.push({
@@ -233,6 +256,12 @@ export function getLegalTargets(piece, pieces, freezeZones, forPremove = false) 
     while (inBounds(c, r)) {
       const target = { col: c, row: r };
       if (isBlockedIce(target)) break;
+      const w = wallAt(target);
+      if (w) {
+        // Sliders stop at the Stone Barricade and can smash it in 1 hit!
+        results.push({ square: target, isCapture: true, isKingStrike: false, isBarricade: true });
+        break;
+      }
       const occ = getPieceAt(target, pieces, piece.id);
       if (!occ) {
         results.push({ square: target, isCapture: false, isKingStrike: false });
@@ -290,15 +319,15 @@ export function getPreviewAttackSquares(pieceType, side, origin, pieces, freezeZ
   return squares;
 }
 
-export function doesPieceAttackSquare(attacker, targetSquare, pieces, freezeZones) {
+export function doesPieceAttackSquare(attacker, targetSquare, pieces, freezeZones, barricades = []) {
   if (attacker.state === 'deploying' || attacker.state === 'moving' || attacker.state === 'swapping') {
     return false;
   }
-  const targets = getLegalTargets(attacker, pieces, freezeZones, false);
+  const targets = getLegalTargets(attacker, pieces, freezeZones, false, barricades);
   return targets.some((t) => sqEq(t.square, targetSquare));
 }
 
-export function findAllChecks(pieces, freezeZones) {
+export function findAllChecks(pieces, freezeZones, barricades = []) {
   const checks = [];
   const whiteKing = pieces.find((p) => p.side === 'white' && p.type === 'K');
   const blackKing = pieces.find((p) => p.side === 'black' && p.type === 'K');
@@ -309,7 +338,7 @@ export function findAllChecks(pieces, freezeZones) {
     if (p.state === 'deploying' || p.state === 'moving' || p.state === 'swapping') continue;
     const enemyKing = p.side === 'white' ? blackKing : whiteKing;
     if (!enemyKing) continue;
-    if (doesPieceAttackSquare(p, enemyKing.square, pieces, freezeZones)) {
+    if (doesPieceAttackSquare(p, enemyKing.square, pieces, freezeZones, barricades)) {
       checks.push({
         pieceId: p.id,
         attackerSq: p.square,
@@ -321,7 +350,7 @@ export function findAllChecks(pieces, freezeZones) {
   return checks;
 }
 
-export function getLegalDropSquares(side, pieces, freezeZones, breachUnlocked) {
+export function getLegalDropSquares(side, pieces, freezeZones, breachUnlocked, barricades = []) {
   const minRow = side === 'white' ? 0 : breachUnlocked ? 4 : 5;
   const maxRow = side === 'white' ? (breachUnlocked ? 3 : 2) : 7;
 
@@ -330,11 +359,22 @@ export function getLegalDropSquares(side, pieces, freezeZones, breachUnlocked) {
     for (let col = 0; col < COLS; col++) {
       const sq = { col, row };
       if (getPieceAt(sq, pieces)) continue;
+      if (getBarricadeAt(sq, barricades)) continue;
       if (isFrozenForSide(sq, side, freezeZones)) continue;
       valid.push(sq);
     }
   }
   return valid;
+}
+
+/** Resolve the 2 adjacent drop squares for a Pawn Pair card given hovered anchor square. */
+export function getPawnPairSquares(anchorSq, legalDrops) {
+  if (!legalDrops.some((sq) => sqEq(sq, anchorSq))) return [];
+  const right = { col: anchorSq.col + 1, row: anchorSq.row };
+  if (legalDrops.some((sq) => sqEq(sq, right))) return [anchorSq, right];
+  const left = { col: anchorSq.col - 1, row: anchorSq.row };
+  if (legalDrops.some((sq) => sqEq(sq, left))) return [left, anchorSq];
+  return [anchorSq];
 }
 
 export function getRayPath(from, to) {

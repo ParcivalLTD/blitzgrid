@@ -1,15 +1,21 @@
 import { GameEngine, validateDeck } from './engine/GameEngine.js';
 import { BotAI } from './engine/BotAI.js';
 import { getBotById } from './engine/constants.js';
+import { getTodayDateKey, getPuzzleById } from './engine/puzzles.js';
 import { SoundEngine } from './audio/SoundEngine.js';
 import { VfxCanvas } from './ui/VfxCanvas.js';
 import { BoardRenderer } from './ui/BoardRenderer.js';
 import { HudController } from './ui/HudController.js';
 import { MultiplayerClient } from './net/MultiplayerClient.js';
-import { applyMatchOutcome, loadProfile, saveProfile } from './state/persistence.js';
+import { applyMatchOutcome, fetchLeaderboard, loadProfile, saveProfile, submitScore } from './state/persistence.js';
 
 let profile = loadProfile();
 document.documentElement.setAttribute('data-board-theme', profile.theme);
+
+// Register installable PWA Service Worker
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
 
 const engine = new GameEngine(profile.selectedBot, profile.elo, profile.customDeck);
 const botAI = new BotAI();
@@ -44,6 +50,8 @@ const mp = new MultiplayerClient({
     sound.unlock();
     matchRecorded = false;
     lastGuestDeck = guestDeck || null;
+    board.readOnly = false;
+    board.showFirstMoveHint = false;
     setPerspective(side);
     board.clearSelection();
     if (hud) hud.exitReplay();
@@ -67,12 +75,54 @@ const mp = new MultiplayerClient({
       });
     }
     if (hud) {
+      hud.setDrawerOpen(false);
+      hud.syncRailView();
+      hud.update();
+    }
+  },
+  onWatchJoined: (msg) => {
+    matchRecorded = true;
+    board.readOnly = true;
+    board.showFirstMoveHint = false;
+    setPerspective('white');
+    board.clearSelection();
+    if (hud) hud.exitReplay();
+    engine.startMatch({
+      mode: msg.mode || 'blitz',
+      isMultiplayer: true,
+      isRemoteGuest: true,
+    });
+    if (msg.state) {
+      engine.applyNetState(msg.state);
+    }
+    if (hud) {
+      hud.setDrawerOpen(false);
+      hud.syncRailView();
+      hud.update();
+    }
+  },
+  onReconnected: (msg) => {
+    matchRecorded = false;
+    board.readOnly = false;
+    board.showFirstMoveHint = false;
+    setPerspective(msg.side || 'white');
+    board.clearSelection();
+    engine.startMatch({
+      mode: msg.mode || 'blitz',
+      isMultiplayer: true,
+      isRemoteGuest: msg.side === 'black',
+    });
+    if (msg.state) {
+      engine.applyNetState(msg.state);
+    }
+    if (hud) {
       hud.syncRailView();
       hud.update();
     }
   },
   onRematchStart: () => {
     matchRecorded = false;
+    board.readOnly = false;
     board.clearSelection();
     if (hud) hud.exitReplay();
     if (mp.side === 'white') {
@@ -93,15 +143,15 @@ const mp = new MultiplayerClient({
     if (hud) hud.update();
   },
   onState: (netState) => {
-    if (mp.side !== 'black') return;
+    if (mp.side !== 'black' && !mp.spectating) return;
     const prevPhase = engine.phase;
     engine.applyNetState(netState);
-    if (prevPhase !== 'ended' && engine.phase === 'ended' && !matchRecorded && engine.result) {
+    if (!mp.spectating && prevPhase !== 'ended' && engine.phase === 'ended' && !matchRecorded && engine.result) {
       recordMatchOutcome();
     }
   },
   onRemoteEvent: (ev) => {
-    if (mp.side !== 'black') return;
+    if (mp.side !== 'black' && !mp.spectating) return;
     sound.handleEvent(ev);
     vfx.handleEvent(ev);
   },
@@ -112,6 +162,7 @@ const mp = new MultiplayerClient({
     mp.sendState(engine.exportNetState());
   },
   onOpponentLeft: () => {
+    board.readOnly = false;
     if (engine.isMultiplayer) {
       engine.resetToIdle();
       setPerspective('white');
@@ -143,6 +194,10 @@ function executeEngineCommand(side, cmd) {
       return engine.playSwapCard(side, cmd.slotIndex, cmd.pieceAId, cmd.pieceBId);
     case 'PROMOTE':
       return engine.playPromoteCard(side, cmd.slotIndex, cmd.pieceId);
+    case 'HASTE':
+      return engine.playHasteCard(side, cmd.slotIndex, cmd.pieceId);
+    case 'WALL':
+      return engine.playWallCard(side, cmd.slotIndex, cmd.targetSquare);
     case 'RESIGN':
       engine.resign(side);
       return true;
@@ -158,7 +213,14 @@ const board = new BoardRenderer(boardSvg, engine, {
   onTileSnap: () => {
     sound.haptic(6);
   },
+  onFirstInteraction: () => {
+    if (!profile.seenHint) {
+      profile = { ...profile, seenHint: true };
+      saveProfile(profile);
+    }
+  },
   onCommand: (cmd) => {
+    if (mp.spectating) return false;
     if (engine.isMultiplayer && mp.side === 'black') {
       mp.sendCmd(cmd);
       return true;
@@ -172,7 +234,7 @@ const board = new BoardRenderer(boardSvg, engine, {
 });
 
 function recordMatchOutcome() {
-  if (matchRecorded || !engine.result) return;
+  if (matchRecorded || !engine.result || mp.spectating) return;
   matchRecorded = true;
   const oppName = engine.isMultiplayer
     ? mp.opponent?.name || '1v1 Opponent'
@@ -185,6 +247,28 @@ function recordMatchOutcome() {
   });
   engine.setPlayerElo(profile.elo);
   if (hud) hud.setProfile(profile);
+
+  // Sync Daily Challenge clear time or updated ELO to SQLite leaderboard
+  const r = engine.result;
+  if (r.mode === 'puzzle' && r.winner === 'white' && r.puzzleId && r.puzzleId.startsWith('daily_')) {
+    const puz = getPuzzleById(r.puzzleId);
+    const clearSec = Math.max(0.5, Number((puz.durationSec - engine.timeRemaining).toFixed(1)));
+    submitScore({
+      kind: 'daily',
+      dateKey: r.puzzleId.slice(6),
+      handle: profile.handle || 'Player',
+      clearSec,
+      brilliant: r.stats?.brilliant || 0,
+    });
+  } else if (r.mode !== 'puzzle') {
+    submitScore({
+      kind: 'elo',
+      handle: profile.handle || 'Player',
+      elo: profile.elo,
+      wins: profile.wins,
+      games: profile.games,
+    });
+  }
 }
 
 engine.onEvent((ev) => {
@@ -209,8 +293,12 @@ engine.onEvent((ev) => {
 
 function startSoloMatch(mode = 'blitz', puzzleId = null) {
   sound.unlock();
-  if (mp.status !== 'disconnected') mp.leaveRoom();
+  if (mp.status === 'connected' || mp.status === 'waiting' || mp.status === 'watching' || mp.inQueue) {
+    mp.leaveRoom();
+  }
   matchRecorded = false;
+  board.readOnly = false;
+  board.showFirstMoveHint = !profile.seenHint && profile.games === 0 && mode !== 'puzzle';
   setPerspective('white');
   board.clearSelection();
   botAI.reset();
@@ -225,9 +313,15 @@ function startSoloMatch(mode = 'blitz', puzzleId = null) {
   if (hud) hud.update();
 }
 
+async function refreshLeaderboard() {
+  const data = await fetchLeaderboard(getTodayDateKey());
+  if (hud) hud.setLeaderboard(data);
+}
+
 hud = new HudController(engine, board, mp, profile, {
   onStartSolo: startSoloMatch,
   onResign: () => {
+    if (mp.spectating) return;
     if (engine.isMultiplayer && mp.side === 'black') {
       mp.sendCmd({ kind: 'RESIGN' });
     } else {
@@ -238,6 +332,7 @@ hud = new HudController(engine, board, mp, profile, {
     }
   },
   onTogglePause: () => {
+    if (mp.spectating) return;
     engine.togglePause();
     hud.update();
   },
@@ -254,6 +349,8 @@ hud = new HudController(engine, board, mp, profile, {
     saveProfile(profile);
   },
   onReturnToMenu: () => {
+    board.readOnly = false;
+    board.showFirstMoveHint = false;
     engine.resetToIdle();
     setPerspective('white');
     board.clearSelection();
@@ -261,16 +358,29 @@ hud = new HudController(engine, board, mp, profile, {
     hud.setTab('play');
     hud.update();
   },
+  onJoinQueue: (mode) => {
+    sound.unlock();
+    mp.joinQueue({ mode, elo: profile.elo, name: profile.handle || 'Player', deck: profile.customDeck });
+  },
+  onLeaveQueue: () => {
+    mp.leaveQueue();
+  },
   onCreateRoom: (mode) => {
     sound.unlock();
-    mp.createRoom({ mode, elo: profile.elo, name: 'Host' });
+    mp.createRoom({ mode, elo: profile.elo, name: profile.handle || 'Host', deck: profile.customDeck });
   },
   onJoinRoom: (code) => {
     sound.unlock();
-    mp.joinRoom({ code, elo: profile.elo, name: 'Guest', deck: profile.customDeck });
+    mp.joinRoom({ code, elo: profile.elo, name: profile.handle || 'Guest', deck: profile.customDeck });
+  },
+  onWatchRoom: (code) => {
+    sound.unlock();
+    mp.watchRoom(code);
   },
   onLeaveMultiplayer: () => {
     mp.leaveRoom();
+    board.readOnly = false;
+    board.showFirstMoveHint = false;
     engine.resetToIdle();
     setPerspective('white');
     board.clearSelection();
@@ -279,6 +389,13 @@ hud = new HudController(engine, board, mp, profile, {
     hud.renderMultiplayerPanel();
     hud.update();
   },
+  onHandleChange: (raw) => {
+    const clean = String(raw || '').replace(/[^A-Za-z0-9 _\-]/g, '').trim().slice(0, 16) || 'You';
+    profile = { ...profile, handle: clean };
+    saveProfile(profile);
+    hud.setProfile(profile);
+  },
+  onLoadLeaderboard: refreshLeaderboard,
   onDeckDraftChange: (draftDeck) => {
     profile = { ...profile, customDeck: draftDeck };
     if (draftDeck.length === 8) {
@@ -310,11 +427,24 @@ hud = new HudController(engine, board, mp, profile, {
   },
 });
 
-// Auto-join room from shareable invite link (?room=XXXX)
-const urlRoom = new URLSearchParams(location.search).get('room');
-if (urlRoom) {
+// Connect passively so live Online: N counter populates immediately
+mp.connectPassive();
+
+// Deep links (?watch=XXXX for live spectating, ?room=XXXX for invite join) or 15s reconnect recovery
+const qs = new URLSearchParams(location.search);
+const urlWatch = qs.get('watch');
+const urlRoom = qs.get('room');
+if (urlWatch) {
   hud.setTab('multiplayer');
-  mp.joinRoom({ code: urlRoom, elo: profile.elo, name: 'Guest', deck: profile.customDeck });
+  mp.watchRoom(urlWatch);
+} else if (urlRoom) {
+  hud.setTab('multiplayer');
+  mp.joinRoom({ code: urlRoom, elo: profile.elo, name: profile.handle || 'Guest', deck: profile.customDeck });
+} else {
+  const saved = mp.getSavedSession();
+  if (saved) {
+    mp.tryReconnect(saved.code, saved.token);
+  }
 }
 
 // Keyboard shortcuts: 1-4 select cards, Esc cancels, P pauses, R rematches, M mutes
@@ -336,17 +466,17 @@ window.addEventListener('keydown', (e) => {
     hud.setProfile(profile);
     return;
   }
-  if (key === 'p' && !engine.isMultiplayer) {
+  if (key === 'p' && !engine.isMultiplayer && !mp.spectating) {
     engine.togglePause();
     hud.update();
     return;
   }
-  if (key === 'r' && !engine.isMultiplayer && (engine.phase === 'ended' || engine.phase === 'idle')) {
+  if (key === 'r' && !engine.isMultiplayer && !mp.spectating && (engine.phase === 'ended' || engine.phase === 'idle')) {
     hud.exitReplay();
     startSoloMatch(hud.selectedMode, hud.selectedPuzzleId);
     return;
   }
-  if (key >= '1' && key <= '4') {
+  if (key >= '1' && key <= '4' && !mp.spectating) {
     board.selectCardSlot(Number(key) - 1);
   }
 });

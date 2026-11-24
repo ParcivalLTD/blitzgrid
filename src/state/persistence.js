@@ -4,6 +4,8 @@ import { validateDeck } from '../engine/GameEngine.js';
 const STORAGE_KEY = 'blitz_grid_profile_v2';
 
 const DEFAULT_PROFILE = {
+  handle: 'You',
+  seenHint: false,
   elo: 800,
   streak: 0,
   bestStreak: 0,
@@ -117,4 +119,30 @@ export function applyMatchOutcome(profile, { opponentName, botId, mySide = 'whit
 
   saveProfile(next);
   return next;
+}
+
+export async function fetchLeaderboard(dateKey) {
+  try {
+    const q = dateKey ? `?date=${encodeURIComponent(dateKey)}` : '';
+    const res = await fetch(`./api/leaderboard${q}`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function submitScore(payload) {
+  try {
+    const res = await fetch('./api/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data && data.ok);
+  } catch {
+    return false;
+  }
 }

@@ -1,4 +1,5 @@
 import {
+  BARRICADE_DURATION,
   BASE_DECK,
   CARD_DEFS,
   CHECK_CHIP_DAMAGE,
@@ -45,8 +46,10 @@ import {
   computeEvalNormalized,
   doesPieceAttackSquare,
   findAllChecks,
+  getBarricadeAt,
   getLegalDropSquares,
   getLegalTargets,
+  getPawnPairSquares,
   getPieceAt,
   getRayPath,
   isFrozenForSide,
@@ -149,6 +152,7 @@ export class GameEngine {
     this.black = null;
     this.pieces = [];
     this.freezeZones = [];
+    this.barricades = [];
     this.elixirRune = null; // { square: { col, row }, spawnedAt: number }
     this.nextRuneTime = ELIXIR_RUNE_FIRST_SEC;
 
@@ -259,6 +263,7 @@ export class GameEngine {
     this.paused = false;
     this.lastTickSecond = -1;
     this.freezeZones = [];
+    this.barricades = [];
     this.elixirRune = null;
     this.nextRuneTime = 9999; // Disabled in puzzles for exact determinism
     this.lastMove = null;
@@ -376,6 +381,7 @@ export class GameEngine {
     this.white = this.makeSideState(this.whiteDeck);
     this.black = this.makeSideState(this.blackDeck);
     this.freezeZones = [];
+    this.barricades = [];
     this.elixirRune = null;
     this.nextRuneTime = ELIXIR_RUNE_FIRST_SEC;
     this.lastMove = null;
@@ -501,12 +507,11 @@ export class GameEngine {
     }
 
     if (!this.isPieceReady(piece)) {
-      // Allow chaining crimson premoves even while mid-slide or recoiling!
       const virtualPiece =
         piece.state === 'moving' || piece.state === 'recoiling'
           ? { ...piece, square: { ...originSq } }
           : piece;
-      const premoveTargets = getLegalTargets(virtualPiece, this.pieces, this.freezeZones, true);
+      const premoveTargets = getLegalTargets(virtualPiece, this.pieces, this.freezeZones, true, this.barricades);
       if (premoveTargets.some((t) => sqEq(t.square, targetSquare))) {
         piece.premove = { ...targetSquare };
         return 'premoved';
@@ -514,7 +519,7 @@ export class GameEngine {
       return 'invalid';
     }
 
-    const targets = getLegalTargets(piece, this.pieces, this.freezeZones, false);
+    const targets = getLegalTargets(piece, this.pieces, this.freezeZones, false, this.barricades);
     const found = targets.find((t) => sqEq(t.square, targetSquare));
     if (!found) return 'invalid';
 
@@ -625,11 +630,25 @@ export class GameEngine {
     if (def.kind !== 'unit' || !def.pieceType) return false;
     if (s.elixir < def.cost) return false;
 
-    const legalDrops = getLegalDropSquares(side, this.pieces, this.freezeZones, s.breachUnlocked);
+    const legalDrops = getLegalDropSquares(side, this.pieces, this.freezeZones, s.breachUnlocked, this.barricades);
     if (!legalDrops.some((sq) => sqEq(sq, targetSquare))) return false;
 
     s.elixir = Math.max(0, s.elixir - def.cost);
     this.cycleCard(side, slotIndex);
+
+    if (def.isPair) {
+      const pairSquares = getPawnPairSquares(targetSquare, legalDrops);
+      for (const psq of pairSquares) {
+        const p = this.createPiece(side, 'P', psq, 'deploying');
+        p.landBounce = LAND_BOUNCE_SEC;
+        this.pieces.push(p);
+        this.emit({ type: 'DEPLOY', side, pieceType: 'P', at: psq });
+        this.checkElixirRuneClaim(side, psq);
+      }
+      this.pushLog(side, `P x${pairSquares.length} @ ${toAlgebraic(targetSquare)}`);
+      this.captureReplayFrame(true);
+      return true;
+    }
 
     const newPiece = this.createPiece(side, def.pieceType, targetSquare, 'deploying');
     newPiece.landBounce = LAND_BOUNCE_SEC;
@@ -638,8 +657,62 @@ export class GameEngine {
     this.pushLog(side, `${def.pieceType === 'P' ? 'P' : def.pieceType} @ ${toAlgebraic(targetSquare)}`);
     this.emit({ type: 'DEPLOY', side, pieceType: def.pieceType, at: targetSquare });
 
-    // Dropping directly onto a Rank 4/5 Elixir Rune (when breach unlocked) claims it!
     this.checkElixirRuneClaim(side, targetSquare);
+    this.captureReplayFrame(true);
+    return true;
+  }
+
+  playHasteCard(side, slotIndex, pieceId) {
+    if (!this.isLivePlay()) return false;
+    const s = this.getSideState(side);
+    if (s.hand[slotIndex] !== 'haste') return false;
+    if (s.elixir < CARD_DEFS.haste.cost) return false;
+
+    const piece = this.pieces.find((p) => p.id === pieceId && p.side === side);
+    if (!piece) return false;
+    const needsHaste = piece.cooldown > 0 || piece.state === 'deploying';
+    if (!needsHaste) return false;
+
+    s.elixir = Math.max(0, s.elixir - CARD_DEFS.haste.cost);
+    this.cycleCard(side, slotIndex);
+
+    if (piece.state === 'deploying') {
+      piece.state = 'idle';
+      piece.stateTimer = 0;
+      this.checkImmediateCheckTrigger(piece);
+    }
+    piece.cooldown = 0;
+    piece.justReadyFlash = READY_FLASH_SEC;
+
+    this.pushLog(side, `Haste ${piece.type}@${toAlgebraic(piece.square)}`, undefined, 'haste');
+    this.emit({ type: 'HASTE', side, at: piece.square });
+    this.captureReplayFrame(true);
+    return true;
+  }
+
+  playWallCard(side, slotIndex, targetSquare) {
+    if (!this.isLivePlay()) return false;
+    const s = this.getSideState(side);
+    if (s.hand[slotIndex] !== 'wall') return false;
+    if (s.elixir < CARD_DEFS.wall.cost) return false;
+
+    if (getPieceAt(targetSquare, this.pieces)) return false;
+    if (getBarricadeAt(targetSquare, this.barricades)) return false;
+    if (isFrozenForSide(targetSquare, side, this.freezeZones)) return false;
+
+    s.elixir = Math.max(0, s.elixir - CARD_DEFS.wall.cost);
+    this.cycleCard(side, slotIndex);
+
+    this.barricades.push({
+      id: `wall_${this.nextId++}`,
+      owner: side,
+      square: { ...targetSquare },
+      remaining: BARRICADE_DURATION,
+      duration: BARRICADE_DURATION,
+    });
+
+    this.pushLog(side, `Wall @ ${toAlgebraic(targetSquare)}`, undefined, 'wall');
+    this.emit({ type: 'BARRICADE', side, at: targetSquare });
     this.captureReplayFrame(true);
     return true;
   }
@@ -699,7 +772,7 @@ export class GameEngine {
       return false;
     }
 
-    const checksBefore = findAllChecks(this.pieces, this.freezeZones);
+    const checksBefore = findAllChecks(this.pieces, this.freezeZones, this.barricades);
     const kingWasChecked =
       (a.type === 'K' || b.type === 'K') && checksBefore.some((c) => c.kingSide === side);
 
@@ -731,7 +804,7 @@ export class GameEngine {
 
     let badge;
     if (kingWasChecked) {
-      const checksAfter = findAllChecks(this.pieces, this.freezeZones);
+      const checksAfter = findAllChecks(this.pieces, this.freezeZones, this.barricades);
       if (!checksAfter.some((c) => c.kingSide === side)) {
         badge = 'brilliant';
         const kingSq = a.type === 'K' ? sqB : sqA;
@@ -799,6 +872,7 @@ export class GameEngine {
       for (let col = 0; col < COLS; col++) {
         const sq = { col, row };
         if (getPieceAt(sq, this.pieces)) continue;
+        if (getBarricadeAt(sq, this.barricades)) continue;
         if (this.freezeZones.some((z) => col >= z.col && col <= z.col + 1 && row >= z.row && row <= z.row + 1)) {
           continue;
         }
@@ -950,6 +1024,11 @@ export class GameEngine {
     }
     this.freezeZones = this.freezeZones.filter((z) => z.remaining > 0);
 
+    for (let i = 0; i < this.barricades.length; i++) {
+      this.barricades[i].remaining -= dt;
+    }
+    this.barricades = this.barricades.filter((b) => b.remaining > 0);
+
     const snapshot = [...this.pieces];
     for (let i = 0; i < snapshot.length; i++) {
       const p = snapshot[i];
@@ -1044,7 +1123,7 @@ export class GameEngine {
       if (p.premove && this.isPieceReady(p)) {
         const queued = p.premove;
         p.premove = null;
-        const targets = getLegalTargets(p, this.pieces, this.freezeZones, false);
+        const targets = getLegalTargets(p, this.pieces, this.freezeZones, false, this.barricades);
         const match = targets.find((t) => sqEq(t.square, queued));
         if (match) {
           if (match.isCastle) {
@@ -1083,6 +1162,10 @@ export class GameEngine {
 
     for (let i = 0; i < this.freezeZones.length; i++) {
       this.freezeZones[i].remaining = Math.max(0, this.freezeZones[i].remaining - dt);
+    }
+
+    for (let i = 0; i < this.barricades.length; i++) {
+      this.barricades[i].remaining = Math.max(0, this.barricades[i].remaining - dt);
     }
 
     if (this.elixirRune && this.elixirRune.status === 'telegraph') {
@@ -1150,6 +1233,12 @@ export class GameEngine {
               break;
             }
           }
+          if (getBarricadeAt(midSq, this.barricades)) {
+            p.targetSquare = { ...midSq };
+            p.isStrikeMove = false;
+            p.moveProgress = 1;
+            break;
+          }
           if (isFrozenForSide(midSq, p.side, this.freezeZones)) {
             const stopSq = idx > 0 ? path[idx - 1] : p.fromSquare;
             p.targetSquare = { ...stopSq };
@@ -1168,6 +1257,27 @@ export class GameEngine {
 
   resolveMoveArrival(p) {
     const dest = p.targetSquare;
+
+    // 1-Hit Smash on a Stone Barricade!
+    const wall = getBarricadeAt(dest, this.barricades);
+    if (wall) {
+      this.barricades = this.barricades.filter((b) => b.id !== wall.id);
+      p.square = { ...dest };
+      p.renderX = dest.col;
+      p.renderY = dest.row;
+      p.state = 'idle';
+      p.hasMoved = true;
+      p.cooldown = p.maxCooldown;
+      p.landBounce = LAND_BOUNCE_SEC;
+      this.pushLog(p.side, `${p.type}xWall ${toAlgebraic(dest)}`);
+      this.emit({ type: 'BARRICADE_BREAK', at: dest, side: p.side });
+      this.checkElixirRuneClaim(p.side, dest);
+      this.checkAutoPromotion(p);
+      this.checkImmediateCheckTrigger(p);
+      this.captureReplayFrame(true);
+      return;
+    }
+
     const occupant = getPieceAt(dest, this.pieces, p.id);
 
     if (occupant && occupant.side === p.side) {
@@ -1359,7 +1469,7 @@ export class GameEngine {
     const enemyKing = this.pieces.find((k) => k.side === enemySide && k.type === 'K');
     if (!enemyKing) return false;
 
-    if (doesPieceAttackSquare(p, enemyKing.square, this.pieces, this.freezeZones)) {
+    if (doesPieceAttackSquare(p, enemyKing.square, this.pieces, this.freezeZones, this.barricades)) {
       enemyKing.checkFlash = 0.5;
       this.damageKing(enemySide, CHECK_CHIP_DAMAGE, p.side, p.type, enemyKing.square, false);
       this.pushBadge('check', enemyKing.square, `-${CHECK_CHIP_DAMAGE}`);
@@ -1370,7 +1480,7 @@ export class GameEngine {
         kingSq: enemyKing.square,
       });
 
-      const targets = getLegalTargets(p, this.pieces, this.freezeZones, false);
+      const targets = getLegalTargets(p, this.pieces, this.freezeZones, false, this.barricades);
       const otherValuable = targets.some((t) => {
         if (!t.isCapture || t.isKingStrike) return false;
         const victim = getPieceAt(t.square, this.pieces, p.id);
@@ -1517,6 +1627,7 @@ export class GameEngine {
       elixirRune: this.elixirRune ? { ...this.elixirRune, square: { ...this.elixirRune.square } } : null,
       lastMove: this.lastMove ? { from: { ...this.lastMove.from }, to: { ...this.lastMove.to }, side: this.lastMove.side } : null,
       freezeZones: this.freezeZones.map((z) => ({ ...z })),
+      barricades: this.barricades.map((b) => ({ ...b, square: { ...b.square } })),
       pieces: this.pieces.map((p) => ({
         id: p.id,
         side: p.side,
@@ -1552,6 +1663,7 @@ export class GameEngine {
       black: this.black,
       pieces: this.pieces,
       freezeZones: this.freezeZones,
+      barricades: this.barricades,
       elixirRune: this.elixirRune,
       lastMove: this.lastMove,
       moveLog: this.moveLog.slice(0, 25),
@@ -1574,6 +1686,7 @@ export class GameEngine {
     this.white = net.white;
     this.black = net.black;
     this.freezeZones = net.freezeZones;
+    this.barricades = net.barricades || [];
     this.elixirRune = net.elixirRune || null;
     this.lastMove = net.lastMove;
     this.moveLog = net.moveLog;
@@ -1607,6 +1720,6 @@ export class GameEngine {
   }
 
   getActiveChecks() {
-    return findAllChecks(this.pieces, this.freezeZones);
+    return findAllChecks(this.pieces, this.freezeZones, this.barricades);
   }
 }
