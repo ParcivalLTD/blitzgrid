@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en" data-board-theme="green">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#262421" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Blitz Grid — Real-Time 6x8 Chess Clash</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&family=Patrick+Hand&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./src/styles/theme.css" />
+    <link rel="stylesheet" href="./src/styles/layout.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <!-- Left/Center Stage: Eval Bar + Board Column -->
+      <section class="stage-wrap" aria-label="Chessboard stage">
+        <div class="eval-column" title="Live Advantage">
+          <div class="eval-bar">
+            <div class="eval-fill-white" id="eval-white" style="height: 50%"></div>
+            <div class="eval-midline"></div>
+          </div>
+        </div>
+
+        <div class="board-column">
+          <!-- Opponent Strip -->
+          <div class="player-strip">
+            <div class="player-identity">
+              <div class="avatar-box" id="opp-avatar"></div>
+              <div class="identity-meta">
+                <div class="identity-row">
+                  <span class="player-name" id="opp-name">Petra</span>
+                  <span class="player-elo tabular" id="opp-elo">(950)</span>
+                </div>
+                <div class="captured-row" id="opp-captured"></div>
+              </div>
+            </div>
+            <div class="strip-right">
+              <div class="hp-group" title="Opponent King HP">
+                <span id="opp-hp-icon"></span>
+                <div class="hp-bar-track">
+                  <div class="hp-bar-fill healthy" id="opp-hp-fill" style="width: 100%"></div>
+                  <div class="hp-bar-notch"></div>
+                </div>
+                <span class="hp-value tabular" id="opp-hp-val">20/20</span>
+              </div>
+              <div class="match-clock tabular" id="match-clock">
+                <span id="clock-val">2:00</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 6x8 Hand-Drawn Chess.com Board -->
+          <div class="board-frame" id="board-frame">
+            <svg class="board-svg" id="board-svg" role="application" aria-label="6 by 8 Blitz Grid Chessboard"></svg>
+            <canvas class="vfx-canvas" id="vfx-canvas"></canvas>
+            <div id="banner-host"></div>
+            <div id="pause-backdrop" class="board-modal-backdrop" style="display: none"></div>
+            <div id="review-backdrop" class="board-modal-backdrop" style="display: none"></div>
+          </div>
+
+          <!-- Player Strip -->
+          <div class="player-strip">
+            <div class="player-identity">
+              <div class="avatar-box" id="you-avatar"></div>
+              <div class="identity-meta">
+                <div class="identity-row">
+                  <span class="player-name" id="you-name">You</span>
+                  <span class="player-elo tabular" id="you-elo">(800)</span>
+                </div>
+                <div class="captured-row" id="you-captured"></div>
+              </div>
+            </div>
+            <div class="strip-right">
+              <div class="hp-group" title="Your King HP">
+                <span id="you-hp-icon"></span>
+                <div class="hp-bar-track">
+                  <div class="hp-bar-fill healthy" id="you-hp-fill" style="width: 100%"></div>
+                  <div class="hp-bar-notch"></div>
+                </div>
+                <span class="hp-value tabular" id="you-hp-val">20/20</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Elixir Bar + 4-Card Hand Dock -->
+          <div class="dock-wrap">
+            <div class="elixir-row">
+              <div class="elixir-readout tabular">
+                <span id="elixir-drop-icon"></span>
+                <span id="elixir-num">5</span>
+              </div>
+              <div class="elixir-track">
+                <div class="elixir-fill" id="elixir-fill" style="width: 50%"></div>
+                <div class="elixir-ticks">
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                  <div class="elixir-tick"></div>
+                </div>
+              </div>
+              <span class="elixir-rate-tag tabular" id="elixir-rate">1x</span>
+            </div>
+
+            <div class="hand-row" id="hand-row"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Mobile Drawer Backdrop -->
+      <div id="drawer-backdrop" class="drawer-backdrop"></div>
+
+      <!-- Slim Chess.com Right Rail -->
+      <aside class="right-rail" id="right-rail" aria-label="Game controls and moves">
+        <header class="rail-header">
+          <div class="brand-mark">
+            <span id="brand-logo"></span>
+            <span class="brand-title">Blitz Grid</span>
+          </div>
+          <div class="rail-icon-actions">
+            <button class="icon-btn mobile-pause-btn" id="btn-mobile-pause" type="button" title="Pause" style="display: none"></button>
+            <button class="icon-btn mobile-drawer-btn" id="btn-drawer" type="button" title="Menu"></button>
+            <button class="icon-btn" id="btn-theme" type="button" title="Switch Board Theme"></button>
+            <button class="icon-btn" id="btn-mute" type="button" title="Mute (M)"></button>
+            <button class="icon-btn" id="btn-help" type="button" title="Rules"></button>
+          </div>
+        </header>
+
+        <div class="rail-stats-strip">
+          <div class="stat-pair">
+            <span>Rating</span>
+            <strong class="tabular" id="stat-elo">800</strong>
+          </div>
+          <div class="stat-pair">
+            <span id="stat-streak-icon"></span>
+            <span>Streak</span>
+            <strong class="tabular" id="stat-streak">0</strong>
+          </div>
+        </div>
+
+        <div id="bot-quip" class="bot-quip-bar" style="display: none"></div>
+
+        <!-- Minimal 4-Tab Bar (visible when not mid-match) -->
+        <nav class="rail-tabs" id="rail-tabs" aria-label="Sidebar tabs">
+          <button class="rail-tab active" data-tab="play" type="button"></button>
+          <button class="rail-tab" data-tab="multiplayer" type="button"></button>
+          <button class="rail-tab" data-tab="deck" type="button"></button>
+          <button class="rail-tab" data-tab="history" type="button"></button>
+        </nav>
+
+        <div class="rail-body">
+          <!-- Play Tab (Modes + Bots / Puzzles) -->
+          <div id="tab-play" style="display: flex; flex-direction: column; flex: 1; min-height: 0">
+            <div class="mode-segment" id="mode-segment">
+              <button class="mode-pill active" data-mode="blitz" type="button">2:00</button>
+              <button class="mode-pill" data-mode="overtime" type="button">OT 1:00</button>
+              <button class="mode-pill" data-mode="puzzle" type="button">Puzzles</button>
+            </div>
+            <div class="bot-list" id="bot-list"></div>
+          </div>
+
+          <!-- 1v1 Multiplayer Tab -->
+          <div id="tab-multiplayer" class="mp-panel" style="display: none"></div>
+
+          <!-- Custom 8-Card Deck Tab -->
+          <div id="tab-deck" class="deck-panel" style="display: none"></div>
+
+          <!-- Career & Match History Tab -->
+          <div id="tab-history" class="history-panel" style="display: none"></div>
+
+          <!-- Live Move Log (shown during match or replay) -->
+          <div id="move-log-wrap" style="display: none; flex-direction: column; flex: 1; min-height: 0">
+            <div class="rail-section-label" id="rail-section-label">Moves</div>
+            <div class="move-log" id="move-log"></div>
+          </div>
+        </div>
+
+        <footer class="rail-footer" id="rail-footer">
+          <div id="normal-footer" style="display: flex; flex-direction: column; gap: 8px; width: 100%">
+            <button class="btn-primary" id="btn-primary" type="button"></button>
+            <div class="footer-secondary-row">
+              <button class="btn-secondary" id="btn-pause" type="button" disabled></button>
+              <button class="btn-secondary" id="btn-resign" type="button" disabled></button>
+            </div>
+          </div>
+          <div id="replay-footer" class="replay-bar" style="display: none"></div>
+        </footer>
+      </aside>
+    </main>
+
+    <!-- Compact Visual Rules Modal -->
+    <div id="rules-backdrop" class="global-modal-backdrop" style="display: none">
+      <div class="rules-modal">
+        <div class="modal-head">
+          <div>
+            <div class="brand-title">How to Play</div>
+            <div class="modal-subtitle">Real-time 6x8 Chess Clash</div>
+          </div>
+          <button class="icon-btn" id="btn-close-rules" type="button" aria-label="Close rules"></button>
+        </div>
+        <div class="rules-list" id="rules-list"></div>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,123 @@
+:root {
+  /* Grounded Matte Chess.com Palette */
+  --bg-app: #302e2b;
+  --bg-rail: #262421;
+  --bg-rail-alt: #2b2926;
+  --bg-surface: #383531;
+  --bg-surface-hover: #423e39;
+  --bg-inset: #1f1d1b;
+
+  --border-subtle: #3d3a35;
+  --border-strong: #514d46;
+  --ink-dark: #1d1c1a;
+  --ink-paper: #f4f1e6;
+
+  --text-primary: #eeede8;
+  --text-secondary: #a8a49c;
+  --text-muted: #78746c;
+
+  /* Functional Accents (Strictly Earned, No Neon) */
+  --cta-green: #81b64c;
+  --cta-green-hover: #90c45b;
+  --cta-green-lip: #5c8732;
+
+  --elixir: #9b4dca;
+  --elixir-fill: #8c41ba;
+  --elixir-muted: #5a3473;
+
+  --gold: #dda938;
+  --gold-deep: #a67a1e;
+
+  --danger: #cc3f3b;
+  --danger-bg: #5c2321;
+
+  --frost: #5cb8e4;
+  --swap: #9378e6;
+
+  --badge-brilliant: #1bada6;
+  --badge-great: #5c8bb0;
+  --badge-blunder: #ca3431;
+  --badge-check: #d65536;
+  --badge-streak: #dda938;
+
+  /* Default Chess.com Tournament Green Board */
+  --sq-dark: #769656;
+  --sq-light: #eeeed2;
+  --sq-hi-dark: #baca44;
+  --sq-hi-light: #f6f669;
+  --sq-premove-dark: #cc5c57;
+  --sq-premove-light: #e27a75;
+
+  /* Fonts */
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sketch: 'Patrick Hand', 'Segoe Print', 'Comic Sans MS', cursive;
+
+  /* Radii & Spacing */
+  --r-sm: 4px;
+  --r-md: 6px;
+}
+
+[data-board-theme='walnut'] {
+  --sq-dark: #b58863;
+  --sq-light: #f0d9b5;
+  --sq-hi-dark: #cdd26a;
+  --sq-hi-light: #f7ec74;
+}
+
+[data-board-theme='slate'] {
+  --sq-dark: #8ca2ad;
+  --sq-light: #dee3e6;
+  --sq-hi-dark: #9bc2d4;
+  --sq-hi-light: #cbe2ed;
+}
+
+[data-board-theme='graphite'] {
+  --sq-dark: #6e7780;
+  --sq-light: #e5e3dc;
+  --sq-hi-dark: #a5b47a;
+  --sq-hi-light: #dfdf9f;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.sketch-text {
+  font-family: var(--font-sketch);
+  letter-spacing: 0.02em;
+}

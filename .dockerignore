@@ -1,0 +1,8 @@
+.git
+.gitignore
+__pycache__
+*.py[cod]
+render.yaml
+README.md
+.DS_Store
+Thumbs.db
