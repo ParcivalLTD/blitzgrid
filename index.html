@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#262421" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <title>Blitz Grid — Real-Time 6x8 Chess Clash</title>
+    <title>Drop-Chess — Real-Time 6x8 Chess Clash</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="./src/styles/layout.css" />
   </head>
   <body>
-    <main class="app-shell">
+    <main class="app-shell" id="app-shell" data-phase="idle">
       <!-- Left/Center Stage: Eval Bar + Board Column -->
       <section class="stage-wrap" aria-label="Chessboard stage">
         <div class="eval-column" title="Live Advantage">
@@ -27,8 +27,8 @@
         </div>
 
         <div class="board-column">
-          <!-- Opponent Strip -->
-          <div class="player-strip">
+          <!-- Opponent Strip (Top full-bleed bar on mobile) -->
+          <div class="player-strip opp-strip">
             <div class="player-identity">
               <div class="avatar-box" id="opp-avatar"></div>
               <div class="identity-meta">
@@ -43,6 +43,7 @@
               <div class="hp-group" title="Opponent King HP">
                 <span id="opp-hp-icon"></span>
                 <div class="hp-bar-track">
+                  <div class="hp-bar-trail" id="opp-hp-trail" style="width: 100%"></div>
                   <div class="hp-bar-fill healthy" id="opp-hp-fill" style="width: 100%"></div>
                   <div class="hp-bar-notch"></div>
                 </div>
@@ -51,88 +52,112 @@
               <div class="match-clock tabular" id="match-clock">
                 <span id="clock-val">2:00</span>
               </div>
+              <button class="icon-btn mobile-only-btn" id="btn-mobile-menu" type="button" title="Menu"></button>
             </div>
           </div>
 
-          <!-- 6x8 Hand-Drawn Chess.com Board -->
-          <div class="board-frame" id="board-frame">
-            <svg class="board-svg" id="board-svg" role="application" aria-label="6 by 8 Blitz Grid Chessboard"></svg>
-            <canvas class="vfx-canvas" id="vfx-canvas"></canvas>
-            <div id="banner-host"></div>
-            <div id="pause-backdrop" class="board-modal-backdrop" style="display: none"></div>
-            <div id="review-backdrop" class="board-modal-backdrop" style="display: none"></div>
-          </div>
-
-          <!-- Player Strip -->
-          <div class="player-strip">
-            <div class="player-identity">
-              <div class="avatar-box" id="you-avatar"></div>
-              <div class="identity-meta">
-                <div class="identity-row">
-                  <span class="player-name" id="you-name">You</span>
-                  <span class="player-elo tabular" id="you-elo">(800)</span>
-                </div>
-                <div class="captured-row" id="you-captured"></div>
-              </div>
+          <!-- Arena Center Wrapper (houses mobile slim eval + 6x8 board) -->
+          <div class="arena-center">
+            <div class="mobile-eval-bar" title="Live Advantage">
+              <div class="eval-fill-white" id="eval-white-mobile" style="height: 50%"></div>
+              <div class="eval-midline"></div>
             </div>
-            <div class="strip-right">
-              <div class="hp-group" title="Your King HP">
-                <span id="you-hp-icon"></span>
-                <div class="hp-bar-track">
-                  <div class="hp-bar-fill healthy" id="you-hp-fill" style="width: 100%"></div>
-                  <div class="hp-bar-notch"></div>
-                </div>
-                <span class="hp-value tabular" id="you-hp-val">20/20</span>
-              </div>
+            <div class="board-frame" id="board-frame">
+              <svg class="board-svg" id="board-svg" role="application" aria-label="6 by 8 Drop-Chess Board"></svg>
+              <canvas class="vfx-canvas" id="vfx-canvas"></canvas>
+              <div id="banner-host"></div>
+              <div id="pause-backdrop" class="board-modal-backdrop" style="display: none"></div>
+              <div id="review-backdrop" class="board-modal-backdrop" style="display: none"></div>
             </div>
           </div>
 
-          <!-- Elixir Bar + 4-Card Hand Dock -->
-          <div class="dock-wrap">
-            <div class="elixir-row">
-              <div class="elixir-readout tabular">
-                <span id="elixir-drop-icon"></span>
-                <span id="elixir-num">5</span>
-              </div>
-              <div class="elixir-track">
-                <div class="elixir-fill" id="elixir-fill" style="width: 50%"></div>
-                <div class="elixir-ticks">
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
-                  <div class="elixir-tick"></div>
+          <!-- Bottom Battle Dock (Full-bleed Clash tray on mobile; flush strip + hand on desktop) -->
+          <div class="bottom-dock">
+            <!-- Player Strip -->
+            <div class="player-strip you-strip">
+              <div class="player-identity">
+                <div class="avatar-box" id="you-avatar"></div>
+                <div class="identity-meta">
+                  <div class="identity-row">
+                    <span class="player-name" id="you-name">You</span>
+                    <span class="player-elo tabular" id="you-elo">(800)</span>
+                  </div>
+                  <div class="captured-row" id="you-captured"></div>
                 </div>
               </div>
-              <span class="elixir-rate-tag tabular" id="elixir-rate">1x</span>
+              <div class="strip-right">
+                <div class="hp-group" title="Your King HP">
+                  <span id="you-hp-icon"></span>
+                  <div class="hp-bar-track">
+                    <div class="hp-bar-trail" id="you-hp-trail" style="width: 100%"></div>
+                    <div class="hp-bar-fill healthy" id="you-hp-fill" style="width: 100%"></div>
+                    <div class="hp-bar-notch"></div>
+                  </div>
+                  <span class="hp-value tabular" id="you-hp-val">20/20</span>
+                </div>
+                <button class="icon-btn mobile-pause-inline" id="btn-mobile-pause" type="button" title="Pause" style="display: none"></button>
+              </div>
             </div>
 
-            <div class="hand-row" id="hand-row"></div>
+            <!-- Mobile-Only Idle Thumb-Zone Launch Pad (replaces dead grey cards when idle on phone!) -->
+            <div class="mobile-idle-dock" id="mobile-idle-dock">
+              <div class="mobile-quick-row">
+                <button class="mobile-chip" id="mchip-opp" type="button"></button>
+                <button class="mobile-chip" id="mchip-1v1" type="button"></button>
+                <button class="mobile-chip" id="mchip-deck" type="button"></button>
+                <button class="mobile-chip" id="mchip-stats" type="button"></button>
+              </div>
+              <button class="btn-primary mobile-play-btn" id="btn-mobile-play" type="button"></button>
+            </div>
+
+            <!-- Elixir Bar + 4-Card Hand Dock -->
+            <div class="dock-wrap" id="battle-hand-dock">
+              <div class="elixir-row">
+                <div class="elixir-readout tabular">
+                  <span id="elixir-drop-icon"></span>
+                  <span id="elixir-num">5</span>
+                </div>
+                <div class="elixir-track">
+                  <div class="elixir-fill" id="elixir-fill" style="width: 50%"></div>
+                  <div class="elixir-ticks">
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                    <div class="elixir-tick"></div>
+                  </div>
+                </div>
+                <span class="elixir-rate-tag tabular" id="elixir-rate">1x</span>
+              </div>
+
+              <div class="hand-row" id="hand-row"></div>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- Mobile Drawer Backdrop -->
+      <!-- Mobile Bottom-Sheet Backdrop -->
       <div id="drawer-backdrop" class="drawer-backdrop"></div>
 
-      <!-- Slim Chess.com Right Rail -->
+      <!-- Desktop Slim Chess.com Right Rail / Mobile Slide-Up Bottom Sheet -->
       <aside class="right-rail" id="right-rail" aria-label="Game controls and moves">
+        <div class="sheet-handle-wrap"><div class="sheet-handle"></div></div>
+
         <header class="rail-header">
           <div class="brand-mark">
             <span id="brand-logo"></span>
-            <span class="brand-title">Blitz Grid</span>
+            <span class="brand-title">Drop-Chess</span>
           </div>
           <div class="rail-icon-actions">
-            <button class="icon-btn mobile-pause-btn" id="btn-mobile-pause" type="button" title="Pause" style="display: none"></button>
-            <button class="icon-btn mobile-drawer-btn" id="btn-drawer" type="button" title="Menu"></button>
             <button class="icon-btn" id="btn-theme" type="button" title="Switch Board Theme"></button>
             <button class="icon-btn" id="btn-mute" type="button" title="Mute (M)"></button>
             <button class="icon-btn" id="btn-help" type="button" title="Rules"></button>
+            <button class="icon-btn mobile-only-btn" id="btn-close-sheet" type="button" title="Close"></button>
           </div>
         </header>
 
@@ -204,7 +229,7 @@
         <div class="modal-head">
           <div>
             <div class="brand-title">How to Play</div>
-            <div class="modal-subtitle">Real-time 6x8 Chess Clash</div>
+            <div class="modal-subtitle">Real-time 6x8 Drop-Chess</div>
           </div>
           <button class="icon-btn" id="btn-close-rules" type="button" aria-label="Close rules"></button>
         </div>

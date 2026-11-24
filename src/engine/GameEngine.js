@@ -5,6 +5,7 @@ import {
   COLS,
   COOLDOWN_GILDED,
   COOLDOWN_KING,
+  COOLDOWN_KING_LAST_STAND,
   COOLDOWN_STANDARD,
   DEPLOY_DURATION,
   ELIXIR_RATE_NORMAL,
@@ -15,6 +16,8 @@ import {
   ELIXIR_RUNE_INTERVAL_SEC,
   FREEZE_DURATION,
   getBotById,
+  HIT_STOP_SEC,
+  KING_LAST_STAND_HP,
   KING_MAX_HP,
   KNIGHT_MOVE_DURATION,
   LAND_BOUNCE_SEC,
@@ -25,9 +28,11 @@ import {
   PIECE_ELIXIR_VALUE,
   PIECE_KING_STRIKE,
   PROMOTE_CHANNEL,
+  READY_FLASH_SEC,
   RECOIL_DURATION,
   ROYAL_BREACH_HP,
   ROWS,
+  RUNE_TELEGRAPH_SEC,
   SHATTER_DURATION_SEC,
   SLIDE_PER_TILE_DURATION,
   START_ELIXIR,
@@ -128,6 +133,7 @@ export class GameEngine {
 
     this.paused = false;
     this.startGrace = 0;
+    this.hitStopTimer = 0;
     this.shatterTimer = 0;
     this.pendingEnd = null;
     this.defeatedSide = null;
@@ -351,6 +357,8 @@ export class GameEngine {
       hurtFlash: 0,
       checkFlash: 0,
       landBounce: 0,
+      justReadyFlash: 0,
+      swapArcDir: 0,
     };
   }
 
@@ -359,6 +367,7 @@ export class GameEngine {
     this.elapsed = 0;
     this.timeRemaining = this.mode === 'overtime' ? OVERTIME_MODE_DURATION_SEC : MATCH_DURATION_SEC;
     this.startGrace = 0;
+    this.hitStopTimer = 0;
     this.shatterTimer = 0;
     this.pendingEnd = null;
     this.defeatedSide = null;
@@ -465,9 +474,7 @@ export class GameEngine {
     if (this.phase === 'idle' || this.phase === 'ended' || this.phase === 'shattering') return false;
     if (this.paused) return false;
     if (piece.side !== side) return false;
-    if (piece.state === 'moving' || piece.state === 'recoiling' || piece.state === 'swapping') {
-      return false;
-    }
+    if (piece.state === 'swapping') return false;
     return true;
   }
 
@@ -485,13 +492,21 @@ export class GameEngine {
     }
     const piece = this.pieces.find((p) => p.id === pieceId);
     if (!piece || !this.canControlPiece(piece, side)) return 'invalid';
-    if (sqEq(piece.square, targetSquare)) {
+
+    const originSq =
+      piece.state === 'moving' || piece.state === 'recoiling' ? piece.targetSquare : piece.square;
+    if (sqEq(originSq, targetSquare)) {
       piece.premove = null;
       return 'invalid';
     }
 
     if (!this.isPieceReady(piece)) {
-      const premoveTargets = getLegalTargets(piece, this.pieces, this.freezeZones, true);
+      // Allow chaining crimson premoves even while mid-slide or recoiling!
+      const virtualPiece =
+        piece.state === 'moving' || piece.state === 'recoiling'
+          ? { ...piece, square: { ...originSq } }
+          : piece;
+      const premoveTargets = getLegalTargets(virtualPiece, this.pieces, this.freezeZones, true);
       if (premoveTargets.some((t) => sqEq(t.square, targetSquare))) {
         piece.premove = { ...targetSquare };
         return 'premoved';
@@ -526,6 +541,7 @@ export class GameEngine {
     king.moveProgress = 0;
     king.moveDuration = SWAP_DURATION;
     king.state = 'swapping';
+    king.swapArcDir = 0;
     king.hasMoved = true;
     king.cooldown = king.maxCooldown;
     king.premove = null;
@@ -536,6 +552,7 @@ export class GameEngine {
     rook.moveProgress = 0;
     rook.moveDuration = SWAP_DURATION;
     rook.state = 'swapping';
+    rook.swapArcDir = 0;
     rook.hasMoved = true;
     rook.cooldown = rook.maxCooldown;
     rook.premove = null;
@@ -698,6 +715,7 @@ export class GameEngine {
     a.moveProgress = 0;
     a.moveDuration = SWAP_DURATION;
     a.state = 'swapping';
+    a.swapArcDir = 1;
     a.premove = null;
     a.hasMoved = true;
 
@@ -707,6 +725,7 @@ export class GameEngine {
     b.moveProgress = 0;
     b.moveDuration = SWAP_DURATION;
     b.state = 'swapping';
+    b.swapArcDir = -1;
     b.premove = null;
     b.hasMoved = true;
 
@@ -788,13 +807,20 @@ export class GameEngine {
     }
     if (candidates.length === 0) return;
     const sq = candidates[Math.floor(Math.random() * candidates.length)];
-    this.elixirRune = { square: sq, spawnedAt: this.elapsed };
-    this.emit({ type: 'RUNE_SPAWN', at: sq });
+    // 3-second objective telegraph so both players can race for the +2 Elixir Rune!
+    this.elixirRune = {
+      square: sq,
+      spawnedAt: this.elapsed,
+      status: 'telegraph',
+      remainingTelegraph: RUNE_TELEGRAPH_SEC,
+      telegraphDuration: RUNE_TELEGRAPH_SEC,
+    };
+    this.emit({ type: 'RUNE_TELEGRAPH', at: sq });
     this.captureReplayFrame(true);
   }
 
   checkElixirRuneClaim(side, sq) {
-    if (!this.elixirRune) return false;
+    if (!this.elixirRune || this.elixirRune.status !== 'active') return false;
     if (!sqEq(this.elixirRune.square, sq)) return false;
     const s = this.getSideState(side);
     s.elixir = Math.min(MAX_ELIXIR, s.elixir + ELIXIR_RUNE_BONUS);
@@ -842,6 +868,12 @@ export class GameEngine {
       return;
     }
 
+    // Impact Hit-Stop (55ms tactile freeze on heavy Royal Strikes, Queen captures & Shield breaks)
+    if (this.hitStopTimer > 0) {
+      this.hitStopTimer = Math.max(0, this.hitStopTimer - dt);
+      return;
+    }
+
     this.elapsed += dt;
     this.timeRemaining = Math.max(0, this.timeRemaining - dt);
 
@@ -853,9 +885,25 @@ export class GameEngine {
       this.captureReplayFrame(true);
     }
 
-    // Center-Line +2 Elixir Rune spawner
-    if (this.mode !== 'puzzle' && !this.elixirRune && this.elapsed >= this.nextRuneTime) {
-      this.spawnElixirRune();
+    // Center-Line +2 Elixir Rune spawner & 3s telegraph countdown
+    if (this.mode !== 'puzzle') {
+      if (!this.elixirRune && this.elapsed >= this.nextRuneTime) {
+        this.spawnElixirRune();
+      } else if (this.elixirRune && this.elixirRune.status === 'telegraph') {
+        this.elixirRune.remainingTelegraph -= dt;
+        if (this.elixirRune.remainingTelegraph <= 0) {
+          this.elixirRune.remainingTelegraph = 0;
+          this.elixirRune.status = 'active';
+          const sq = this.elixirRune.square;
+          this.emit({ type: 'RUNE_SPAWN', at: sq });
+          // If a piece raced onto the square during the 3s telegraph, claim immediately!
+          const standing = getPieceAt(sq, this.pieces);
+          if (standing) {
+            this.checkElixirRuneClaim(standing.side, sq);
+          }
+          this.captureReplayFrame(true);
+        }
+      }
     }
 
     if (this.timeRemaining <= 10 && this.timeRemaining > 0) {
@@ -910,6 +958,7 @@ export class GameEngine {
       if (p.hurtFlash > 0) p.hurtFlash = Math.max(0, p.hurtFlash - dt);
       if (p.checkFlash > 0) p.checkFlash = Math.max(0, p.checkFlash - dt);
       if (p.landBounce > 0) p.landBounce = Math.max(0, p.landBounce - dt);
+      if (p.justReadyFlash > 0) p.justReadyFlash = Math.max(0, p.justReadyFlash - dt);
 
       const frozen = isFrozenForSide(p.square, p.side, this.freezeZones);
 
@@ -920,6 +969,7 @@ export class GameEngine {
             p.state = 'idle';
             p.stateTimer = 0;
             p.landBounce = LAND_BOUNCE_SEC * 0.7;
+            p.justReadyFlash = READY_FLASH_SEC;
             this.checkImmediateCheckTrigger(p);
           }
         }
@@ -938,11 +988,22 @@ export class GameEngine {
 
       if (p.state === 'swapping') {
         p.moveProgress = Math.min(1, p.moveProgress + dt / p.moveDuration);
-        const t = 1 - (1 - p.moveProgress) * (1 - p.moveProgress);
-        p.renderX = p.fromSquare.col + (p.targetSquare.col - p.fromSquare.col) * t;
-        p.renderY = p.fromSquare.row + (p.targetSquare.row - p.fromSquare.row) * t;
+        const t = 1 - Math.pow(1 - p.moveProgress, 3);
+        const dx = p.targetSquare.col - p.fromSquare.col;
+        const dy = p.targetSquare.row - p.fromSquare.row;
+        let ox = 0;
+        let oy = 0;
+        if (p.swapArcDir) {
+          const len = Math.hypot(dx, dy) || 1;
+          const bow = Math.sin(p.moveProgress * Math.PI) * 0.45 * p.swapArcDir;
+          ox = (-dy / len) * bow;
+          oy = (dx / len) * bow;
+        }
+        p.renderX = p.fromSquare.col + dx * t + ox;
+        p.renderY = p.fromSquare.row + dy * t + oy;
         if (p.moveProgress >= 1) {
           p.state = 'idle';
+          p.swapArcDir = 0;
           p.renderX = p.square.col;
           p.renderY = p.square.row;
           p.landBounce = LAND_BOUNCE_SEC;
@@ -954,7 +1015,7 @@ export class GameEngine {
 
       if (p.state === 'recoiling') {
         p.moveProgress = Math.min(1, p.moveProgress + dt / p.moveDuration);
-        const t = 1 - (1 - p.moveProgress) * (1 - p.moveProgress);
+        const t = 1 - Math.pow(1 - p.moveProgress, 2);
         p.renderX = p.fromSquare.col + (p.targetSquare.col - p.fromSquare.col) * t;
         p.renderY = p.fromSquare.row + (p.targetSquare.row - p.fromSquare.row) * t;
         if (p.moveProgress >= 1) {
@@ -975,6 +1036,9 @@ export class GameEngine {
 
       if (p.cooldown > 0 && !frozen) {
         p.cooldown = Math.max(0, p.cooldown - dt);
+        if (p.cooldown === 0) {
+          p.justReadyFlash = READY_FLASH_SEC;
+        }
       }
 
       if (p.premove && this.isPieceReady(p)) {
@@ -1021,6 +1085,10 @@ export class GameEngine {
       this.freezeZones[i].remaining = Math.max(0, this.freezeZones[i].remaining - dt);
     }
 
+    if (this.elixirRune && this.elixirRune.status === 'telegraph') {
+      this.elixirRune.remainingTelegraph = Math.max(0, this.elixirRune.remainingTelegraph - dt);
+    }
+
     const alpha = 1 - Math.exp(-26 * dt);
     for (let i = 0; i < this.pieces.length; i++) {
       const p = this.pieces[i];
@@ -1032,11 +1100,13 @@ export class GameEngine {
       const frozen = isFrozenForSide(p.square, p.side, this.freezeZones);
       if (p.state === 'idle' && p.cooldown > 0 && !frozen) {
         p.cooldown = Math.max(0, p.cooldown - dt);
+        if (p.cooldown === 0) p.justReadyFlash = READY_FLASH_SEC;
       } else if ((p.state === 'deploying' || p.state === 'promoting') && !frozen) {
         p.stateTimer = Math.min(p.stateDuration, p.stateTimer + dt);
       }
       if (p.landBounce > 0) p.landBounce = Math.max(0, p.landBounce - dt);
       if (p.hurtFlash > 0) p.hurtFlash = Math.max(0, p.hurtFlash - dt);
+      if (p.justReadyFlash > 0) p.justReadyFlash = Math.max(0, p.justReadyFlash - dt);
     }
   }
 
@@ -1044,9 +1114,15 @@ export class GameEngine {
     const prevProgress = p.moveProgress;
     p.moveProgress = Math.min(1, p.moveProgress + dt / p.moveDuration);
 
+    // Crisp ease-out-cubic for slides; punchy anticipate-and-slam curve for Royal Strikes!
     const t = p.moveProgress;
-    p.renderX = p.fromSquare.col + (p.targetSquare.col - p.fromSquare.col) * t;
-    p.renderY = p.fromSquare.row + (p.targetSquare.row - p.fromSquare.row) * t;
+    const ease = p.isStrikeMove
+      ? t < 0.3
+        ? t * 0.35
+        : 0.105 + Math.pow((t - 0.3) / 0.7, 0.55) * 0.895
+      : 1 - Math.pow(1 - t, 3);
+    p.renderX = p.fromSquare.col + (p.targetSquare.col - p.fromSquare.col) * ease;
+    p.renderY = p.fromSquare.row + (p.targetSquare.row - p.fromSquare.row) * ease;
 
     if (!p.moveIsJump && (p.type === 'B' || p.type === 'R' || p.type === 'Q') && p.moveProgress < 1) {
       const path = getRayPath(p.fromSquare, p.targetSquare);
@@ -1120,11 +1196,16 @@ export class GameEngine {
         occupant.hurtFlash = 0.35;
         p.hasMoved = true;
         p.cooldown = p.maxCooldown;
+        this.hitStopTimer = HIT_STOP_SEC;
         this.emit({ type: 'CROWN_BREAK', at: dest });
         this.pushLog(occupant.side, `Shield @ ${toAlgebraic(dest)}`);
         this.startRecoil(p, p.fromSquare, true);
         this.captureReplayFrame(true);
         return;
+      }
+
+      if (occupant.type === 'Q') {
+        this.hitStopTimer = HIT_STOP_SEC;
       }
 
       this.pieces = this.pieces.filter((x) => x.id !== occupant.id);
@@ -1319,6 +1400,7 @@ export class GameEngine {
       let badge;
       if (damage >= 3) {
         badge = 'great';
+        this.hitStopTimer = HIT_STOP_SEC;
         this.statsBySide[attackerSide].great++;
         this.pushBadge('great', kingSq, `-${damage}`);
       } else {
@@ -1334,6 +1416,16 @@ export class GameEngine {
       });
     } else {
       this.pushLog(attackerSide, `${attackerType}${toAlgebraic(kingSq)}+ (-1)`, 'check');
+    }
+
+    // King Last-Stand Adrenaline (<= 5 HP): King's personal dodge ring speeds up 2.2s -> 1.6s!
+    if (prevHp > KING_LAST_STAND_HP && victimState.kingHp <= KING_LAST_STAND_HP && victimState.kingHp > 0 && kingPiece) {
+      kingPiece.maxCooldown = COOLDOWN_KING_LAST_STAND;
+      kingPiece.cooldown = Math.min(kingPiece.cooldown, COOLDOWN_KING_LAST_STAND);
+      if (victimSide === 'white' || this.isMultiplayer) {
+        this.showBanner('LAST STAND — KING 1.6s SPEED');
+      }
+      this.emit({ type: 'LAST_STAND', side: victimSide });
     }
 
     if (prevHp > ROYAL_BREACH_HP && victimState.kingHp <= ROYAL_BREACH_HP && victimState.kingHp > 0) {
@@ -1422,7 +1514,7 @@ export class GameEngine {
       whiteElixir: Number(this.white.elixir.toFixed(2)),
       blackElixir: Number(this.black.elixir.toFixed(2)),
       evalNorm: this.getEvalNormalized(),
-      elixirRune: this.elixirRune ? { square: { ...this.elixirRune.square }, spawnedAt: this.elixirRune.spawnedAt } : null,
+      elixirRune: this.elixirRune ? { ...this.elixirRune, square: { ...this.elixirRune.square } } : null,
       lastMove: this.lastMove ? { from: { ...this.lastMove.from }, to: { ...this.lastMove.to }, side: this.lastMove.side } : null,
       freezeZones: this.freezeZones.map((z) => ({ ...z })),
       pieces: this.pieces.map((p) => ({

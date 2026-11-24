@@ -47,6 +47,7 @@ export class HudController {
     this.lastCapturedKey = '';
     this.lastIdentityKey = '';
     this.prevCardAfford = [true, true, true, true];
+    this.prevHandIds = [null, null, null, null];
     this.copiedCodeFlash = false;
 
     this.cacheElements();
@@ -63,7 +64,9 @@ export class HudController {
   cacheElements() {
     const q = (id) => document.getElementById(id);
     this.el = {
+      appShell: q('app-shell'),
       evalWhite: q('eval-white'),
+      evalWhiteMobile: q('eval-white-mobile'),
       boardFrame: q('board-frame'),
       bannerHost: q('banner-host'),
       botQuip: q('bot-quip'),
@@ -75,6 +78,7 @@ export class HudController {
       oppElo: q('opp-elo'),
       oppCaptured: q('opp-captured'),
       oppHpIcon: q('opp-hp-icon'),
+      oppHpTrail: q('opp-hp-trail'),
       oppHpFill: q('opp-hp-fill'),
       oppHpVal: q('opp-hp-val'),
       clockBox: q('match-clock'),
@@ -85,6 +89,7 @@ export class HudController {
       youElo: q('you-elo'),
       youCaptured: q('you-captured'),
       youHpIcon: q('you-hp-icon'),
+      youHpTrail: q('you-hp-trail'),
       youHpFill: q('you-hp-fill'),
       youHpVal: q('you-hp-val'),
 
@@ -94,10 +99,17 @@ export class HudController {
       elixirRate: q('elixir-rate'),
       handRow: q('hand-row'),
 
+      btnMobileMenu: q('btn-mobile-menu'),
+      btnCloseSheet: q('btn-close-sheet'),
+      btnMobilePause: q('btn-mobile-pause'),
+      btnMobilePlay: q('btn-mobile-play'),
+      mchipOpp: q('mchip-opp'),
+      mchip1v1: q('mchip-1v1'),
+      mchipDeck: q('mchip-deck'),
+      mchipStats: q('mchip-stats'),
+
       rightRail: q('right-rail'),
       drawerBackdrop: q('drawer-backdrop'),
-      btnMobilePause: q('btn-mobile-pause'),
-      btnDrawer: q('btn-drawer'),
       brandLogo: q('brand-logo'),
       btnHelp: q('btn-help'),
       btnTheme: q('btn-theme'),
@@ -131,10 +143,14 @@ export class HudController {
 
   initStaticChrome() {
     this.el.brandLogo.innerHTML = Icons.logo(22);
+    this.el.btnMobileMenu.innerHTML = Icons.menu(17);
+    this.el.btnCloseSheet.innerHTML = Icons.close(16);
     this.el.btnMobilePause.innerHTML = Icons.pause(15);
-    this.el.btnDrawer.innerHTML = Icons.menu(16);
     this.el.btnHelp.innerHTML = Icons.help(16);
     this.el.btnTheme.innerHTML = Icons.boardTheme(16);
+    this.el.mchip1v1.innerHTML = `${Icons.users(13)}<span>1v1</span>`;
+    this.el.mchipDeck.innerHTML = `${Icons.deck(13)}<span>Deck</span>`;
+    this.el.mchipStats.innerHTML = `${Icons.history(13)}<span>Stats</span>`;
     this.el.oppHpIcon.innerHTML = Icons.crown(13, '#dda938');
     this.el.youHpIcon.innerHTML = Icons.crown(13, '#dda938');
     this.el.elixirDropIcon.innerHTML = Icons.elixirDrop(14, '#9b4dca');
@@ -187,8 +203,25 @@ export class HudController {
     });
 
     this.el.btnMobilePause.addEventListener('click', () => this.handlers.onTogglePause());
-    this.el.btnDrawer.addEventListener('click', () => this.setDrawerOpen(!this.drawerOpen));
+    this.el.btnMobileMenu.addEventListener('click', () => this.setDrawerOpen(!this.drawerOpen));
+    this.el.btnCloseSheet.addEventListener('click', () => this.setDrawerOpen(false));
     this.el.drawerBackdrop.addEventListener('click', () => this.setDrawerOpen(false));
+
+    // Mobile Idle Battle Launch Dock triggers
+    this.el.btnMobilePlay.addEventListener('click', () => {
+      this.setDrawerOpen(false);
+      this.exitReplay();
+      this.handlers.onStartSolo(this.selectedMode, this.selectedPuzzleId);
+    });
+    const openSheetTab = (tab) => {
+      this.activeTab = tab;
+      this.syncRailView();
+      this.setDrawerOpen(true);
+    };
+    this.el.mchipOpp.addEventListener('click', () => openSheetTab('play'));
+    this.el.mchip1v1.addEventListener('click', () => openSheetTab('multiplayer'));
+    this.el.mchipDeck.addEventListener('click', () => openSheetTab('deck'));
+    this.el.mchipStats.addEventListener('click', () => openSheetTab('history'));
 
     this.el.btnTheme.addEventListener('click', () => {
       const idx = BOARD_THEMES.indexOf(this.profile.theme);
@@ -578,14 +611,20 @@ export class HudController {
       return;
     }
 
+    const bot = getBotById(eng.botId);
+    const modeTag = this.selectedMode === 'overtime' ? 'OT 1:00' : this.selectedMode === 'puzzle' ? 'Puzzle' : '2:00';
+    this.el.mchipOpp.innerHTML = `${Icons.botSwitch(13)}<span>${bot.name} · ${modeTag}</span>`;
+
     if (eng.phase === 'idle') {
       const lbl =
         this.selectedMode === 'overtime'
           ? 'Play Overtime'
           : this.selectedMode === 'puzzle'
             ? 'Start Puzzle'
-            : 'Play Blitz';
-      this.el.btnPrimary.innerHTML = `${Icons.play(15)}<span>${lbl}</span>`;
+            : 'Play Drop-Chess';
+      const btnHtml = `${Icons.play(15)}<span>${lbl}</span>`;
+      this.el.btnPrimary.innerHTML = btnHtml;
+      this.el.btnMobilePlay.innerHTML = btnHtml;
     } else if (eng.phase === 'ended') {
       this.el.btnPrimary.innerHTML = `${Icons.rematch(15)}<span>Rematch</span>`;
     } else {
@@ -707,15 +746,20 @@ export class HudController {
     const handKey = `${mySide}|${hand.join(',')}|${nextCard}|${this.board.selectedCardSlot}|${inactive}`;
 
     if (handKey !== this.lastHandKey) {
+      const dealtSlots = hand.map(
+        (cid, idx) => !inactive && this.prevHandIds[idx] !== null && this.prevHandIds[idx] !== cid
+      );
+      this.prevHandIds = [...hand];
       this.lastHandKey = handKey;
 
       const cardHtml = hand
         .map((cid, idx) => {
           const def = CARD_DEFS[cid];
           const isSelected = this.board.selectedCardSlot === idx;
+          const dealtCls = dealtSlots[idx] ? 'card-dealt' : '';
           return `
             <button
-              class="card-tile ${def.kind === 'spell' ? 'spell-card' : ''} ${isSelected ? 'selected' : ''}"
+              class="card-tile ${def.kind === 'spell' ? 'spell-card' : ''} ${isSelected ? 'selected' : ''} ${dealtCls}"
               data-slot="${idx}"
               type="button"
               ${inactive ? 'disabled' : ''}
@@ -766,6 +810,9 @@ export class HudController {
       const affordable = elixir >= cost;
       if (affordable && !this.prevCardAfford[idx] && eng.elapsed > 0.4) {
         this.handlers.onCardReadyChime?.();
+        btn.classList.remove('card-unlock-pop');
+        void btn.offsetWidth;
+        btn.classList.add('card-unlock-pop');
       }
       this.prevCardAfford[idx] = affordable;
       btn.classList.toggle('unaffordable', !affordable);
@@ -848,6 +895,15 @@ export class HudController {
 
     const myStats = (r.statsBySide && r.statsBySide[mySide]) || r.stats;
 
+    // Arcade Ladder: offer 1-tap Next Bot when beating a solo bot!
+    let nextBot = null;
+    if (iWon && !eng.isMultiplayer && r.mode !== 'puzzle') {
+      const curIdx = BOTS.findIndex((b) => b.id === eng.botId);
+      if (curIdx >= 0 && curIdx < BOTS.length - 1) {
+        nextBot = BOTS[curIdx + 1];
+      }
+    }
+
     this.el.reviewBackdrop.style.display = 'flex';
     this.el.reviewBackdrop.innerHTML = `
       <div class="board-modal">
@@ -882,10 +938,21 @@ export class HudController {
           </div>
         </div>
 
-        <button class="btn-primary" id="modal-rematch" type="button">
-          ${Icons.rematch(15)}<span>${rematchLabel}</span>
-        </button>
+        ${
+          nextBot
+            ? `<button class="btn-primary" id="modal-next-bot" type="button">
+                 ${Icons.play(14)}<span>Next: ${nextBot.name} (${nextBot.elo})</span>
+               </button>`
+            : `<button class="btn-primary" id="modal-rematch" type="button">
+                 ${Icons.rematch(15)}<span>${rematchLabel}</span>
+               </button>`
+        }
         <div class="footer-secondary-row">
+          ${
+            nextBot
+              ? `<button class="btn-secondary" id="modal-rematch" type="button">${Icons.rematch(13)}<span>Rematch</span></button>`
+              : ''
+          }
           ${
             hasReplay
               ? `<button class="btn-secondary" id="modal-replay" type="button">${Icons.replay(14)}<span>Replay</span></button>`
@@ -897,6 +964,14 @@ export class HudController {
         </div>
       </div>
     `;
+
+    const nextBotBtn = document.getElementById('modal-next-bot');
+    if (nextBotBtn && nextBot) {
+      nextBotBtn.addEventListener('click', () => {
+        this.handlers.onSelectBot(nextBot.id);
+        this.handlers.onStartSolo(this.selectedMode, this.selectedPuzzleId);
+      });
+    }
 
     document.getElementById('modal-rematch').addEventListener('click', () => {
       if (eng.isMultiplayer) {
@@ -925,11 +1000,19 @@ export class HudController {
   // Per-Frame Sync
   // =========================================================================
 
+  pulseElixirBar() {
+    this.el.elixirFill.classList.remove('pulse');
+    void this.el.elixirFill.offsetWidth;
+    this.el.elixirFill.classList.add('pulse');
+  }
+
   update() {
     const eng = this.engine;
     const mySide = this.board.perspective;
     const oppSide = mySide === 'white' ? 'black' : 'white';
     const rf = this.replayActive ? eng.replayFrames[this.replayIndex] : null;
+
+    this.el.appShell.dataset.phase = this.replayActive ? 'replay' : eng.phase;
 
     // Identity headers (handles Bots, Puzzles, and 1v1 Guest flip!)
     const bot = getBotById(eng.botId);
@@ -943,6 +1026,7 @@ export class HudController {
       this.el.oppElo.textContent = `(${oppDisplayElo})`;
       this.el.youName.textContent = eng.isMultiplayer ? `You (${mySide === 'white' ? 'W' : 'B'})` : 'You';
       this.renderPlayList();
+      this.syncPrimaryButton();
     }
 
     if (this.lastPhase !== eng.phase) {
@@ -981,17 +1065,19 @@ export class HudController {
       this.el.botQuip.style.display = 'none';
     }
 
-    // Eval Bar (flips cleanly if you're playing Black in 1v1!)
+    // Eval Bar (both desktop and mobile arena eval bar)
     const rawEval = rf ? rf.evalNorm : eng.getEvalNormalized();
     const myEval = mySide === 'white' ? rawEval : -rawEval;
     const bottomPct = Math.max(4, Math.min(96, 50 + myEval * 46));
-    this.el.evalWhite.style.height = `${bottomPct.toFixed(1)}%`;
+    const pctStr = `${bottomPct.toFixed(1)}%`;
+    this.el.evalWhite.style.height = pctStr;
+    if (this.el.evalWhiteMobile) this.el.evalWhiteMobile.style.height = pctStr;
 
-    // King HP Bars
+    // King HP Bars + delayed damage-drain trails
     const myHp = rf ? (mySide === 'white' ? rf.whiteHp : rf.blackHp) : eng.getSideState(mySide).kingHp;
     const oppHp = rf ? (oppSide === 'white' ? rf.whiteHp : rf.blackHp) : eng.getSideState(oppSide).kingHp;
-    this.syncHpBar(this.el.oppHpFill, this.el.oppHpVal, oppHp);
-    this.syncHpBar(this.el.youHpFill, this.el.youHpVal, myHp);
+    this.syncHpBar(this.el.oppHpFill, this.el.oppHpTrail, this.el.oppHpVal, oppHp);
+    this.syncHpBar(this.el.youHpFill, this.el.youHpTrail, this.el.youHpVal, myHp);
 
     // Match Clock
     const rem = rf ? rf.timeRemaining : eng.timeRemaining;
@@ -1062,9 +1148,11 @@ export class HudController {
     }
   }
 
-  syncHpBar(fillEl, valEl, hp) {
+  syncHpBar(fillEl, trailEl, valEl, hp) {
     const pct = Math.max(0, Math.min(100, (hp / KING_MAX_HP) * 100));
-    fillEl.style.width = `${pct.toFixed(1)}%`;
+    const widthStr = `${pct.toFixed(1)}%`;
+    fillEl.style.width = widthStr;
+    if (trailEl) trailEl.style.width = widthStr;
     fillEl.className = `hp-bar-fill ${pct <= 30 ? 'critical' : pct <= 50 ? 'cracked' : 'healthy'}`;
     valEl.textContent = `${hp}/${KING_MAX_HP}`;
   }

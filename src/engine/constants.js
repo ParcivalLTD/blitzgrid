@@ -24,7 +24,12 @@ export const ELIXIR_RUNE_BONUS = 2.0;
 
 export const COOLDOWN_STANDARD = 2.5;
 export const COOLDOWN_KING = 2.2;
+export const COOLDOWN_KING_LAST_STAND = 1.6;
+export const KING_LAST_STAND_HP = 5;
 export const COOLDOWN_GILDED = 1.4;
+export const HIT_STOP_SEC = 0.055;
+export const READY_FLASH_SEC = 0.28;
+export const RUNE_TELEGRAPH_SEC = 3.0;
 
 export const DEPLOY_DURATION = 0.8;
 export const DEPLOY_INVULN = 0.2;

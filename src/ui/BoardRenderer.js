@@ -1,4 +1,4 @@
-import { CARD_DEFS, COLS, KING_MAX_HP, LAND_BOUNCE_SEC, ROWS } from '../engine/constants.js';
+import { CARD_DEFS, COLS, KING_MAX_HP, LAND_BOUNCE_SEC, READY_FLASH_SEC, ROWS } from '../engine/constants.js';
 import {
   findAllChecks,
   getLegalDropSquares,
@@ -15,7 +15,6 @@ import { renderBadgeSvg } from '../art/badges.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const TILE = 100;
-const TOUCH_DRAG_LIFT_SVG = 68; // Lift touch drags ~0.68 tiles above thumb so target square stays visible!
 
 function el(tag, attrs = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -32,6 +31,7 @@ export class BoardRenderer {
     this.perspective = 'white';
     this.onSelectionChange = callbacks.onSelectionChange || (() => {});
     this.onCommand = callbacks.onCommand || null;
+    this.onTileSnap = callbacks.onTileSnap || null;
 
     this.selectedPieceId = null;
     this.selectedCardSlot = null;
@@ -42,6 +42,8 @@ export class BoardRenderer {
     this.dragStartClient = { x: 0, y: 0 };
     this.pointerSvg = { x: 0, y: 0 };
     this.hoverSquare = null;
+    this.lastSnapKey = null;
+    this.snapPopUntil = 0;
 
     // Chess.com right-click planning arrows + optimistic Guest premoves + touch UX state
     this.userArrows = []; // { from: Square, to: Square }
@@ -85,14 +87,11 @@ export class BoardRenderer {
     return { x: col * TILE, y: (ROWS - 1 - row) * TILE };
   }
 
-  clientToBoard(clientX, clientY, applyTouchLift = false) {
+  clientToBoard(clientX, clientY) {
     const rect = this.svg.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
     const svgX = ((clientX - rect.left) / rect.width) * (COLS * TILE);
-    let svgY = ((clientY - rect.top) / rect.height) * (ROWS * TILE);
-    if (applyTouchLift) {
-      svgY -= TOUCH_DRAG_LIFT_SVG;
-    }
+    const svgY = ((clientY - rect.top) / rect.height) * (ROWS * TILE);
     const visualCol = Math.floor(svgX / TILE);
     const visualRow = Math.floor(svgY / TILE);
     const col = this.perspective === 'black' ? COLS - 1 - visualCol : visualCol;
@@ -307,8 +306,9 @@ export class BoardRenderer {
       this.isTouchPointer = startDragEvent.pointerType === 'touch';
       this.dragMode = 'card';
       this.dragMoved = false;
+      this.lastSnapKey = null;
       this.dragStartClient = { x: startDragEvent.clientX, y: startDragEvent.clientY };
-      const pos = this.clientToBoard(startDragEvent.clientX, startDragEvent.clientY, this.isTouchPointer);
+      const pos = this.clientToBoard(startDragEvent.clientX, startDragEvent.clientY);
       if (pos) {
         this.pointerSvg = { x: pos.svgX, y: pos.svgY };
         this.hoverSquare = pos.inBoard ? { col: pos.col, row: pos.row } : null;
@@ -342,7 +342,7 @@ export class BoardRenderer {
     this.svg.addEventListener('pointerdown', (e) => {
       if (this.replayOverride) return;
       this.isTouchPointer = e.pointerType === 'touch';
-      const pos = this.clientToBoard(e.clientX, e.clientY, false);
+      const pos = this.clientToBoard(e.clientX, e.clientY);
       if (!pos || !pos.inBoard) return;
       const sq = { col: pos.col, row: pos.row };
       this.pointerSvg = { x: pos.svgX, y: pos.svgY };
@@ -460,16 +460,26 @@ export class BoardRenderer {
       if (this.dragMode) {
         const dx = e.clientX - this.dragStartClient.x;
         const dy = e.clientY - this.dragStartClient.y;
-        if (dx * dx + dy * dy > 36) {
+        // Forgiving 10px touch drag threshold vs 6px mouse threshold
+        const threshSq = this.isTouchPointer ? 100 : 36;
+        if (dx * dx + dy * dy > threshSq) {
           this.dragMoved = true;
         }
       }
 
-      const useLift = this.isTouchPointer && Boolean(this.dragMode) && (this.dragMoved || this.dragMode === 'card');
-      const pos = this.clientToBoard(e.clientX, e.clientY, useLift);
+      // True 1:1 zero-offset pointer tracking!
+      const pos = this.clientToBoard(e.clientX, e.clientY);
       if (pos) {
         this.pointerSvg = { x: pos.svgX, y: pos.svgY };
         this.hoverSquare = pos.inBoard ? { col: pos.col, row: pos.row } : null;
+        if (this.dragMode && pos.inBoard) {
+          const snapKey = `${pos.col},${pos.row}`;
+          if (snapKey !== this.lastSnapKey) {
+            this.lastSnapKey = snapKey;
+            this.snapPopUntil = performance.now() + 115;
+            if (this.isTouchPointer && this.onTileSnap) this.onTileSnap();
+          }
+        }
       } else {
         this.hoverSquare = null;
       }
@@ -480,11 +490,11 @@ export class BoardRenderer {
       this.dragMoved = false;
       this.rightDragStart = null;
       this.wasAlreadySelected = false;
+      this.lastSnapKey = null;
     });
 
     window.addEventListener('pointerup', (e) => {
-      const useLift = this.isTouchPointer && Boolean(this.dragMode) && (this.dragMoved || this.dragMode === 'card');
-      const pos = this.clientToBoard(e.clientX, e.clientY, useLift);
+      const pos = this.clientToBoard(e.clientX, e.clientY);
 
       // Right-click release -> Draw orange planning arrow OR clear premoves!
       if (e.button === 2 && this.rightDragStart) {
@@ -725,10 +735,34 @@ export class BoardRenderer {
       return;
     }
     const { x, y } = this.sqToSvg(rune.square.col, rune.square.row);
-    const pulse = 1 + Math.sin(elapsed * 5.2) * 0.06;
     const cx = x + 50;
     const cy = y + 50;
 
+    // 3-Second Objective Telegraph Race!
+    if (rune.status === 'telegraph') {
+      const dur = rune.telegraphDuration || 3.0;
+      const rem = Math.max(0, rune.remainingTelegraph ?? 0);
+      const pct = Math.min(1, 1 - rem / dur);
+      const r = 34;
+      const circ = 2 * Math.PI * r;
+      const offset = circ * (1 - pct);
+      const secLabel = String(Math.max(1, Math.ceil(rem)));
+      g.innerHTML = `
+        <g filter="${boilId}">
+          <circle cx="${cx}" cy="${cy}" r="${r}" fill="#9b4dca" fill-opacity="0.14" stroke="#b96ee8" stroke-width="2.4" stroke-dasharray="6 5" opacity="0.7"/>
+          <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#d594ff" stroke-width="4"
+            stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"
+            transform="rotate(-90 ${cx} ${cy})" stroke-linecap="round"/>
+        </g>
+        <text x="${cx}" y="${cy + 6}" text-anchor="middle" font-family="Inter, sans-serif" font-weight="800" font-size="22"
+          stroke="#1b1917" stroke-width="3.5" paint-order="stroke" fill="#f0d4ff">${secLabel}</text>
+        <text x="${cx}" y="${y + 92}" text-anchor="middle" font-family="Inter, sans-serif" font-weight="800" font-size="11"
+          stroke="#1b1917" stroke-width="2.8" paint-order="stroke" fill="#ddb3f8">+2</text>
+      `;
+      return;
+    }
+
+    const pulse = 1 + Math.sin(elapsed * 5.2) * 0.06;
     g.innerHTML = `
       <g filter="${boilId}" transform="translate(${cx}, ${cy}) scale(${pulse.toFixed(3)})">
         <polygon points="0,-34 34,0 0,34 -34,0" fill="#9b4dca" fill-opacity="0.22" stroke="#b96ee8" stroke-width="2.6" stroke-dasharray="7 4"/>
@@ -875,7 +909,11 @@ export class BoardRenderer {
       const piece = pieces.find((p) => p.id === this.selectedPieceId);
       if (piece) {
         const isPremoveMode = !eng.isPieceReady(piece);
-        const targets = getLegalTargets(piece, pieces, freezeZones, isPremoveMode);
+        const originPiece =
+          piece.state === 'moving' || piece.state === 'recoiling'
+            ? { ...piece, square: { ...piece.targetSquare } }
+            : piece;
+        const targets = getLegalTargets(originPiece, pieces, freezeZones, isPremoveMode);
         for (const t of targets) {
           const { x, y } = this.sqToSvg(t.square.col, t.square.row);
           const cx = x + TILE / 2;
@@ -1070,11 +1108,12 @@ export class BoardRenderer {
       );
     }
 
-    // Queued Premove arrows (including instant 0ms optimistic Guest premoves)
+    // Queued Premove arrows (including instant 0ms optimistic Guest premoves & mid-slide chains)
     for (const p of pieces) {
       const pm = p.side === mySide ? (p.premove || this.optimisticPremoves.get(p.id)) : null;
       if (pm) {
-        const f = this.sqToSvg(p.square.col, p.square.row);
+        const origSq = p.state === 'moving' || p.state === 'recoiling' ? p.targetSquare : p.square;
+        const f = this.sqToSvg(origSq.col, origSq.row);
         const t = this.sqToSvg(pm.col, pm.row);
         parts.push(
           `<line x1="${f.x + 50}" y1="${f.y + 50}" x2="${t.x + 50}" y2="${t.y + 50}"
@@ -1108,7 +1147,15 @@ export class BoardRenderer {
       let sy = 1;
       let rot = 0;
 
-      if (p.state === 'moving' && p.moveIsJump) {
+      if (p.state === 'deploying' && p.stateTimer < 0.22) {
+        // Snappy ink-stamp drop-settle on piece deploy!
+        const dtFrac = p.stateTimer / 0.22;
+        const ease = 1 - Math.pow(1 - dtFrac, 3);
+        svgY -= (1 - ease) * 24;
+        const squash = Math.sin(dtFrac * Math.PI);
+        sx = 1 + squash * 0.12;
+        sy = 1 - squash * 0.1;
+      } else if (p.state === 'moving' && p.moveIsJump) {
         const arc = Math.sin(p.moveProgress * Math.PI);
         svgY -= arc * 26;
         sx = 1 + arc * 0.14;
@@ -1164,7 +1211,7 @@ export class BoardRenderer {
       }
 
       const ringG = node.querySelector('.piece-ring');
-      ringG.innerHTML = isDefeatedKing ? '' : this.buildPieceRingMarkup(p, frozen, hpRatio);
+      ringG.innerHTML = isDefeatedKing ? '' : this.buildPieceRingMarkup(p, frozen, hpRatio, phase);
     }
 
     for (const [id, node] of this.pieceNodes.entries()) {
@@ -1175,7 +1222,7 @@ export class BoardRenderer {
     }
   }
 
-  buildPieceRingMarkup(p, frozen, hpRatio) {
+  buildPieceRingMarkup(p, frozen, hpRatio, phase) {
     const r = 43;
     const circ = 2 * Math.PI * r;
     const parts = [];
@@ -1188,6 +1235,33 @@ export class BoardRenderer {
         <rect x="${50 - barW / 2}" y="90" width="${barW}" height="6" rx="2.5" fill="#1b1917" stroke="#111" stroke-width="1"/>
         <rect x="${50 - barW / 2 + 1}" y="91" width="${Math.max(0, fillW - 2)}" height="4" rx="1.8" fill="${color}"/>
       `);
+    }
+
+    // Overtime Auto-Queen Threat Chevron above Pawns 1 step from crossing the Center Line!
+    const isOT = phase === 'overtime' || phase === 'sudden_death';
+    const oneStepFromQueen =
+      isOT &&
+      p.type === 'P' &&
+      ((p.side === 'white' && p.square.row === 3) || (p.side === 'black' && p.square.row === 4));
+    if (oneStepFromQueen) {
+      const bob = Math.sin(performance.now() * 0.008) * 2.5;
+      parts.push(`
+        <g transform="translate(38, ${(3 + bob).toFixed(1)})">
+          <path d="M2 13 L4 5 L8.5 9 L12 2.5 L15.5 9 L20 5 L22 13 Z" fill="#dda938" stroke="#1b1a18" stroke-width="1.8" stroke-linejoin="round"/>
+        </g>
+      `);
+    }
+
+    // Brief warm-gold ready-flash halo the instant stamina finishes refilling!
+    if (p.justReadyFlash > 0) {
+      const t = 1 - p.justReadyFlash / READY_FLASH_SEC;
+      const rad = 40 + t * 11;
+      const op = (1 - t) * 0.85;
+      parts.push(
+        `<circle cx="50" cy="50" r="${rad.toFixed(1)}" fill="none" stroke="${
+          p.gilded ? '#dda938' : '#f7f3e7'
+        }" stroke-width="${(3.8 * (1 - t * 0.5)).toFixed(1)}" opacity="${op.toFixed(2)}"/>`
+      );
     }
 
     if (p.state === 'deploying') {
@@ -1203,6 +1277,9 @@ export class BoardRenderer {
       const pct = Math.min(1, p.stateTimer / p.stateDuration);
       const offset = circ * (1 - pct);
       parts.push(`
+        <circle cx="50" cy="50" r="38" fill="#dda938" fill-opacity="${(0.12 + pct * 0.16).toFixed(2)}"/>
+        <path d="M34 ${(66 - pct * 22).toFixed(1)} V${(52 - pct * 22).toFixed(1)} M50 ${(60 - pct * 26).toFixed(1)} V${(44 - pct * 26).toFixed(1)} M66 ${(66 - pct * 22).toFixed(1)} V${(52 - pct * 22).toFixed(1)}"
+          stroke="#f6d884" stroke-width="2.4" stroke-linecap="round" opacity="0.75"/>
         <circle cx="50" cy="50" r="${r}" fill="none" stroke="rgba(221,169,56,0.35)" stroke-width="5"/>
         <circle cx="50" cy="50" r="${r}" fill="none" stroke="#dda938" stroke-width="5"
           stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"
@@ -1236,17 +1313,24 @@ export class BoardRenderer {
       return;
     }
 
+    const snapActive = performance.now() < this.snapPopUntil;
+    const snapBoost = snapActive ? 1.07 : 1.0;
+
     if (this.dragMode === 'piece' && this.selectedPieceId) {
       const p = pieces.find((x) => x.id === this.selectedPieceId);
       if (p) {
         let halo = '';
         if (this.hoverSquare) {
           const hs = this.sqToSvg(this.hoverSquare.col, this.hoverSquare.row);
-          halo = `<rect x="${hs.x + 3}" y="${hs.y + 3}" width="${TILE - 6}" height="${TILE - 6}" rx="4" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="4"/>`;
+          // High-visibility magnetic square spotlight visible around fingertip with 0px offset!
+          halo = `
+            <rect x="${hs.x}" y="${hs.y}" width="${TILE}" height="${TILE}" fill="rgba(246,246,105,0.24)"/>
+            <rect x="${hs.x + 2.5}" y="${hs.y + 2.5}" width="${TILE - 5}" height="${TILE - 5}" rx="4" fill="none" stroke="rgba(255,255,255,0.92)" stroke-width="5"/>
+          `;
         }
         g.innerHTML = `${halo}<g transform="translate(${this.pointerSvg.x.toFixed(1)}, ${this.pointerSvg.y.toFixed(
           1
-        )}) scale(1.14) translate(-50, -56)">${renderPieceInner(p.type, p.side, {
+        )}) scale(${(1.12 * snapBoost).toFixed(3)}) translate(-50, -52)">${renderPieceInner(p.type, p.side, {
           gilded: p.gilded,
           hasCrownShield: p.hasCrownShield,
         })}</g>`;
@@ -1267,9 +1351,12 @@ export class BoardRenderer {
         const targetPos = snap ? this.sqToSvg(this.hoverSquare.col, this.hoverSquare.row) : null;
         const cx = targetPos ? targetPos.x + 50 : this.pointerSvg.x;
         const cy = targetPos ? targetPos.y + 50 : this.pointerSvg.y;
-        g.innerHTML = `<g opacity="0.82" transform="translate(${cx.toFixed(1)}, ${cy.toFixed(
+        const halo = targetPos
+          ? `<rect x="${targetPos.x + 2}" y="${targetPos.y + 2}" width="${TILE - 4}" height="${TILE - 4}" rx="5" fill="rgba(129,182,76,0.22)" stroke="#81b64c" stroke-width="4.5"/>`
+          : '';
+        g.innerHTML = `${halo}<g opacity="0.86" transform="translate(${cx.toFixed(1)}, ${cy.toFixed(
           1
-        )}) scale(${snap ? 1.0 : 1.08}) translate(-50, -50)">${renderPieceInner(
+        )}) scale(${((snap ? 1.0 : 1.06) * snapBoost).toFixed(3)}) translate(-50, -50)">${renderPieceInner(
           def.pieceType,
           mySide
         )}</g>`;

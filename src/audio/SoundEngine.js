@@ -11,6 +11,17 @@ export class SoundEngine {
     this.muted = muted;
   }
 
+  haptic(pattern) {
+    if (this.muted) return;
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try {
+        navigator.vibrate(pattern);
+      } catch {
+        // Ignore blocked vibrate calls
+      }
+    }
+  }
+
   unlock() {
     if (this.muted) return;
     if (!this.ctx) {
@@ -48,46 +59,61 @@ export class SoundEngine {
         break;
       case 'CAPTURE':
         this.playCapture(ev.streak || 1);
+        this.haptic(15);
         break;
       case 'CHECK':
         this.playCheck();
+        this.haptic(12);
         break;
       case 'KING_STRIKE':
         this.playKingStrike(ev.damage || 3);
+        this.haptic(24);
         break;
       case 'CROWN_BREAK':
         this.playCrownBreak();
+        this.haptic(18);
         break;
       case 'DEPLOY':
         this.playDeploy();
+        this.haptic(10);
         break;
       case 'FREEZE':
         this.playFreeze();
+        this.haptic(14);
         break;
       case 'SWAP':
         this.playSwap();
+        this.haptic(14);
         break;
       case 'PROMOTE':
         this.playPromote(ev.toQueen);
+        this.haptic(18);
         break;
       case 'CASTLE':
         this.playCastle();
+        this.haptic([10, 40, 12]);
+        break;
+      case 'RUNE_TELEGRAPH':
+        this.playRuneTelegraph();
         break;
       case 'RUNE_SPAWN':
         this.playRuneSpawn();
         break;
       case 'RUNE_CLAIM':
         this.playRuneClaim();
+        this.haptic(16);
         break;
       case 'OVERTIME':
       case 'SUDDEN_DEATH':
         this.playOvertime();
+        this.haptic([20, 40, 20]);
         break;
       case 'CLOCK_TICK':
         this.playClockTick(ev.overtime);
         break;
       case 'KING_SHATTER':
         this.playKingShatter();
+        this.haptic([28, 30, 48]);
         break;
       case 'GAME_OVER':
         this.playGameOver(ev.winner);
@@ -355,6 +381,21 @@ export class SoundEngine {
     // Crisp authentic Chess.com double-thock!
     this.playMove(false);
     setTimeout(() => this.playMove(true), 68);
+  }
+
+  playRuneTelegraph() {
+    if (!this.canPlay()) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(520, t);
+    osc.frequency.exponentialRampToValueAtTime(640, t + 0.08);
+    g.gain.setValueAtTime(0.055, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.12);
   }
 
   playRuneSpawn() {

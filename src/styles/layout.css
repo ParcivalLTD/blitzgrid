@@ -179,9 +179,20 @@
   position: relative;
 }
 
+/* Fighting-game / Clash delayed damage-drain trail behind HP fill */
+.hp-bar-trail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #f0e3c4;
+  transition: width 460ms cubic-bezier(0.22, 1, 0.36, 1) 140ms;
+}
+
 .hp-bar-fill {
+  position: relative;
   height: 100%;
-  transition: width 180ms ease-out, background-color 180ms ease;
+  transition: width 160ms ease-out, background-color 180ms ease;
 }
 
 .hp-bar-fill.healthy {
@@ -369,6 +380,19 @@
   background: #b158e0;
 }
 
+.elixir-fill.pulse {
+  animation: elixirFlash 420ms ease-out;
+}
+
+@keyframes elixirFlash {
+  0% {
+    filter: brightness(1.65);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
 .elixir-ticks {
   position: absolute;
   inset: 0;
@@ -431,9 +455,40 @@
 }
 
 .card-tile.selected {
-  transform: translateY(-4px);
+  transform: translateY(-6px);
   border-color: var(--cta-green);
-  box-shadow: 0 4px 0 #181715;
+  box-shadow: 0 5px 0 #181715;
+}
+
+.card-tile.card-dealt {
+  animation: cardDealGlide 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-tile.card-unlock-pop {
+  animation: cardUnlockPop 190ms ease-out;
+}
+
+@keyframes cardDealGlide {
+  0% {
+    opacity: 0.45;
+    transform: translateX(-14px) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes cardUnlockPop {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.06) translateY(-2px);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .card-tile.unaffordable {
@@ -1088,9 +1143,22 @@
   color: var(--text-primary);
 }
 
-/* Mobile-only buttons (hidden on desktop) */
-.mobile-drawer-btn,
-.mobile-pause-btn {
+/* Desktop defaults for wrappers introduced for mobile Clash layout */
+.arena-center {
+  display: contents;
+}
+
+.bottom-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobile-eval-bar,
+.mobile-only-btn,
+.mobile-pause-inline,
+.mobile-idle-dock,
+.sheet-handle-wrap {
   display: none;
 }
 
@@ -1349,42 +1417,101 @@
   border-radius: 3px;
 }
 
-/* Responsive Phone & Tablet Layout (< 820px) — Clash Royale Thumb Ergonomics */
+/* ==========================================================================
+   Native Clash Royale x Chess.com Mobile Layout (<= 820px)
+   Full-bleed arena + bottom-anchored Battle Dock + Slide-up Bottom Sheet
+   ========================================================================== */
 @media (max-width: 820px) {
   .app-shell {
-    --board-h: clamp(270px, calc(100vh - 246px), 580px);
-    --board-h: clamp(270px, calc(100dvh - 246px), 580px);
-    --board-w: min(calc(100vw - 30px), calc(var(--board-h) * 0.75));
+    --board-h: clamp(260px, calc(100vh - 224px), 600px);
+    --board-h: clamp(260px, calc(100dvh - 224px), 600px);
+    --board-w: min(calc(100vw - 22px), calc(var(--board-h) * 0.75));
     --actual-h: calc(var(--board-w) * 1.333333);
+
     flex-direction: column;
-    justify-content: flex-start;
-    gap: 6px;
-    padding: max(6px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom));
+    justify-content: stretch;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
   }
 
   .stage-wrap {
-    height: auto;
+    width: 100%;
+    height: 100%;
     max-height: none;
-    gap: 6px;
+    gap: 0;
   }
 
+  /* Desktop outer eval bar hidden; replaced by flush arena eval bar */
   .eval-column {
-    width: 10px;
-    padding-top: 39px;
-    padding-bottom: 141px;
-  }
-
-  .eval-bar {
-    width: 10px;
+    display: none;
   }
 
   .board-column {
-    gap: 5px;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 0;
   }
 
-  .player-strip {
-    height: 34px;
+  /* 1. Single Clean Full-Bleed Top Opponent Strip */
+  .opp-strip {
+    width: 100%;
+    height: auto;
+    min-height: 44px;
+    padding: max(6px, env(safe-area-inset-top)) 10px 6px;
+    background: var(--bg-rail);
+    border-bottom: 1.5px solid #1b1917;
+    flex-shrink: 0;
+  }
+
+  .mobile-only-btn {
+    display: flex;
+  }
+
+  .mobile-pause-inline {
+    display: flex;
+  }
+
+  /* 2. Centered Maximized Arena (slim 8px eval bar + full-width 6x8 board) */
+  .arena-center {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 4px 6px;
+  }
+
+  .mobile-eval-bar {
+    display: block;
+    position: relative;
+    width: 8px;
+    height: var(--actual-h);
+    border-radius: 3px;
+    overflow: hidden;
+    background: #23211e;
+    border: 1.5px solid #191816;
+    flex-shrink: 0;
+  }
+
+  /* 3. Full-Bleed Clash Battle Dock anchored firmly to bottom edge! */
+  .bottom-dock {
+    width: 100%;
+    flex-shrink: 0;
+    background: var(--bg-rail);
+    border-top: 2px solid #1a1917;
+    padding: 6px 10px max(10px, env(safe-area-inset-bottom));
     gap: 6px;
+  }
+
+  .you-strip {
+    height: 30px;
+    padding: 0;
   }
 
   .avatar-box {
@@ -1393,142 +1520,152 @@
   }
 
   .match-clock {
-    min-width: 58px;
+    min-width: 56px;
     height: 28px;
     padding: 0 7px;
     font-size: 14px;
   }
 
+  /* Clash-style Elixir bar & tall 84px Card Hand with NEXT on left! */
   .elixir-row {
-    height: 18px;
+    height: 22px;
+    gap: 7px;
+  }
+
+  .elixir-track {
+    height: 15px;
+    border-radius: 4px;
+  }
+
+  .elixir-readout {
+    font-size: 14px;
+    min-width: 32px;
   }
 
   .hand-row {
-    height: 74px;
-    grid-template-columns: repeat(4, 1fr) 48px;
-    gap: 5px;
+    height: 84px;
+    grid-template-columns: 50px repeat(4, 1fr);
+    gap: 6px;
+  }
+
+  .next-card-slot {
+    order: -1;
+    border-radius: var(--r-md);
+    background: var(--bg-inset);
+  }
+
+  .card-tile {
+    border-radius: 7px;
+    box-shadow: 0 3px 0 #161513;
+  }
+
+  .card-tile.selected {
+    transform: translateY(-8px);
+    box-shadow: 0 7px 0 #161513;
+  }
+
+  .card-art {
+    width: 36px;
+    height: 36px;
   }
 
   .card-hotkey {
     display: none;
   }
 
-  .mobile-drawer-btn,
-  .mobile-pause-btn {
-    display: flex;
-  }
-
-  /* Slim Top Header Strip — keeps 4-Card Hand right at the bottom under your thumbs! */
-  .right-rail {
-    order: -1;
-    width: calc(var(--board-w) + 16px);
-    height: 40px;
-    flex-direction: row;
-    align-items: center;
-    padding: 0 6px 0 10px;
-    flex-shrink: 0;
-  }
-
-  .rail-header {
-    border-bottom: none;
-    padding: 0;
-    gap: 6px;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .brand-title {
-    font-size: 17px;
-    white-space: nowrap;
-  }
-
-  .icon-btn {
-    width: 30px;
-    height: 30px;
-  }
-
-  .right-rail:not(.drawer-open) .rail-stats-strip,
-  .right-rail:not(.drawer-open) .rail-tabs,
-  .right-rail:not(.drawer-open) .bot-quip-bar,
-  .right-rail:not(.drawer-open) .rail-body {
-    display: none !important;
-  }
-
-  .rail-footer {
-    border-top: none;
-    padding: 0;
-    margin-left: 4px;
-    flex-direction: row;
-    align-items: center;
-  }
-
-  .btn-primary {
-    width: auto;
-    height: 28px;
-    padding: 0 10px;
-    font-size: 11.5px;
-    box-shadow: 0 2px 0 var(--cta-green-lip);
-  }
-
-  .footer-secondary-row {
+  /* Idle State on Mobile: Replace greyed-out cards with thumb-zone Battle Launch Pad! */
+  .app-shell[data-phase='idle'] #battle-hand-dock {
     display: none;
   }
 
-  /* Open Mobile Drawer State */
-  .right-rail.drawer-open {
-    position: fixed;
-    top: max(10px, env(safe-area-inset-top));
-    right: 10px;
-    bottom: max(10px, env(safe-area-inset-bottom));
-    width: min(304px, calc(100vw - 20px));
-    height: auto;
-    max-height: none;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 0;
-    z-index: 45;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
-  }
-
-  .right-rail.drawer-open .rail-header {
-    flex: 0 0 auto;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .right-rail.drawer-open .rail-stats-strip {
+  .app-shell[data-phase='idle'] .mobile-idle-dock {
     display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 2px;
   }
 
-  .right-rail.drawer-open .rail-tabs {
+  .mobile-quick-row {
     display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr 1fr;
+    gap: 6px;
   }
 
-  .right-rail.drawer-open .rail-body {
+  .mobile-chip {
+    height: 32px;
+    padding: 0 8px;
+    border-radius: var(--r-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 700;
     display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .right-rail.drawer-open .rail-footer {
-    border-top: 1px solid var(--border-subtle);
-    padding: 10px 12px 12px;
-    margin-left: 0;
-    flex-direction: column;
-    align-items: stretch;
+  .mobile-chip:active {
+    background: var(--bg-surface-hover);
   }
 
-  .right-rail.drawer-open .btn-primary {
+  .mobile-play-btn {
+    height: 46px;
+    font-size: 15px;
+  }
+
+  /* Desktop Right Rail hidden until opened as a native Slide-Up Bottom Sheet */
+  .right-rail {
+    display: none;
+  }
+
+  .right-rail.drawer-open {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
-    height: 38px;
-    font-size: 13px;
+    height: auto;
+    max-height: 76dvh;
+    border-radius: 14px 14px 0 0;
+    border: 1.5px solid var(--border-strong);
+    border-bottom: none;
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 45;
+    box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.58);
+    animation: sheetSlideUp 210ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes sheetSlideUp {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  .sheet-handle-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 7px 0 2px;
+  }
+
+  .sheet-handle {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-strong);
   }
 
   .right-rail.drawer-open .bot-item-tag {
     white-space: normal;
     line-height: 1.3;
-  }
-
-  .right-rail.drawer-open .footer-secondary-row {
-    display: flex;
   }
 
   .drawer-backdrop.open {
@@ -1547,7 +1684,7 @@
   }
 
   .hp-bar-track {
-    width: 52px;
+    width: 54px;
   }
 
   .hp-value {
@@ -1555,16 +1692,17 @@
     min-width: 24px;
   }
 
-  .brand-title {
-    font-size: 15px;
+  .hand-row {
+    height: 78px;
+    grid-template-columns: 46px repeat(4, 1fr);
   }
 
   .card-art {
-    width: 29px;
-    height: 29px;
+    width: 31px;
+    height: 31px;
   }
 
   .card-label {
-    font-size: 10px;
+    font-size: 10.5px;
   }
 }

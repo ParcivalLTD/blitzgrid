@@ -1,6 +1,6 @@
-# Blitz Grid
+# Drop-Chess
 
-Real-time 6x8 chess clash played at Clash Royale speed—no turns, 2.5s per-piece stamina rings, 20 HP Kings, spells (`Freeze`, `Swap`, `Promote`), real-time Castling, Center-Line `+2 Elixir` runes, Overtime `2x` Elixir + Center-Line Auto-Queens, 5 AI bots, daily & tactical puzzles, custom 8-card decks, replay scrubber, and online 1v1 multiplayer.
+Real-time 6x8 chess clash played at Clash Royale speed—no turns, 2.5s per-piece stamina rings, 20 HP Kings with Last-Stand adrenaline, spells (`Freeze`, `Swap`, `Promote`), real-time Castling, 3s-telegraphed Center-Line `+2 Elixir` runes, Overtime `2x` Elixir + Center-Line Auto-Queens, 5 AI bots, daily & tactical puzzles, custom 8-card decks, replay scrubber, mobile-first Clash touch ergonomics, and online 1v1 multiplayer.
 
 ## One-Click Deploy on Coolify
 

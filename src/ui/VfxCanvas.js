@@ -82,9 +82,22 @@ export class VfxCanvas {
         const c = this.sqCenter(ev.at);
         const ink = ev.side === 'white' ? '#1f1e1c' : '#f4f1e6';
         const accent = ev.tradeDelta >= 2 ? '#1bada6' : '#dda938';
-        this.spawnBurst(c.x, c.y, 13, ink, accent, 145);
-        this.spawnRing(c.x, c.y, c.tile * 0.58, ink, 0.26);
-        this.triggerShake(ev.tradeDelta >= 2 ? 4.5 : 2.8, 0.14);
+        this.spawnBurst(c.x, c.y, 14, ink, accent, 155);
+        this.spawnRing(c.x, c.y, c.tile * 0.62, ink, 0.26);
+        // Captured piece knockback silhouette burst
+        this.shards.push({
+          x: c.x,
+          y: c.y,
+          vx: (Math.random() > 0.5 ? 1 : -1) * 75,
+          vy: -110,
+          rot: 0,
+          vrot: (Math.random() > 0.5 ? 1 : -1) * 10,
+          size: c.tile * 0.22,
+          color: ev.side === 'white' ? '#2c2a27' : '#ede8d8',
+          life: 0,
+          maxLife: 0.24,
+        });
+        this.triggerShake(ev.tradeDelta >= 2 ? 4.8 : 3.0, 0.15);
         break;
       }
 
@@ -187,20 +200,29 @@ export class VfxCanvas {
       case 'SWAP': {
         const a = this.sqCenter(ev.sqA);
         const b = this.sqCenter(ev.sqB);
-        this.spawnRing(a.x, a.y, a.tile * 0.55, '#9378e6', 0.3);
-        this.spawnRing(b.x, b.y, b.tile * 0.55, '#9378e6', 0.3);
-        for (let i = 0; i < 10; i++) {
-          const t = i / 9;
-          this.particles.push({
-            x: a.x + (b.x - a.x) * t,
-            y: a.y + (b.y - a.y) * t,
-            vx: (Math.random() - 0.5) * 65,
-            vy: (Math.random() - 0.5) * 65,
-            r: 2.5 + Math.random() * 2,
-            color: i % 2 === 0 ? '#9378e6' : '#e7e0ff',
-            life: 0,
-            maxLife: 0.32,
-          });
+        this.spawnRing(a.x, a.y, a.tile * 0.58, '#9378e6', 0.3);
+        this.spawnRing(b.x, b.y, b.tile * 0.58, '#9378e6', 0.3);
+        // Opposing curved spiral trails matching piece arcs
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len;
+        const ny = dx / len;
+        for (const dir of [1, -1]) {
+          for (let i = 1; i <= 7; i++) {
+            const t = i / 8;
+            const bow = Math.sin(t * Math.PI) * a.tile * 0.45 * dir;
+            this.particles.push({
+              x: a.x + dx * t + nx * bow,
+              y: a.y + dy * t + ny * bow,
+              vx: nx * bow * 0.6,
+              vy: ny * bow * 0.6,
+              r: 2.4 + Math.random() * 1.8,
+              color: dir === 1 ? '#9378e6' : '#e7e0ff',
+              life: 0,
+              maxLife: 0.32,
+            });
+          }
         }
         break;
       }
@@ -222,9 +244,16 @@ export class VfxCanvas {
         break;
       }
 
+      case 'RUNE_TELEGRAPH': {
+        const c = this.sqCenter(ev.at);
+        this.spawnRing(c.x, c.y, c.tile * 0.62, 'rgba(185,110,232,0.75)', 0.45);
+        break;
+      }
+
       case 'RUNE_SPAWN': {
         const c = this.sqCenter(ev.at);
-        this.spawnRing(c.x, c.y, c.tile * 0.75, '#9b4dca', 0.42);
+        this.spawnRing(c.x, c.y, c.tile * 0.78, '#9b4dca', 0.42);
+        this.spawnBurst(c.x, c.y, 8, '#b96ee8', '#f0d4ff', 95);
         break;
       }
 

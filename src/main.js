@@ -155,6 +155,9 @@ const board = new BoardRenderer(boardSvg, engine, {
   onSelectionChange: () => {
     if (hud) hud.renderHand(engine);
   },
+  onTileSnap: () => {
+    sound.haptic(6);
+  },
   onCommand: (cmd) => {
     if (engine.isMultiplayer && mp.side === 'black') {
       mp.sendCmd(cmd);
@@ -187,6 +190,10 @@ function recordMatchOutcome() {
 engine.onEvent((ev) => {
   sound.handleEvent(ev);
   vfx.handleEvent(ev);
+
+  if (ev.type === 'RUNE_CLAIM' && ev.side === board.perspective && hud) {
+    hud.pulseElixirBar();
+  }
 
   if (engine.isMultiplayer && mp.side === 'white') {
     mp.sendEvent(ev);

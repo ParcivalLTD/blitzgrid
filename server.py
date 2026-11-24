@@ -367,7 +367,7 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
 
 async def main():
     server = await asyncio.start_server(handle_connection, HOST, PORT)
-    print(f"Blitz Grid server running at http://{HOST}:{PORT} (WebSocket at ws://{HOST}:{PORT}/ws)")
+    print(f"Drop-Chess server running at http://{HOST}:{PORT} (WebSocket at ws://{HOST}:{PORT}/ws)")
     async with server:
         await server.serve_forever()
 
